@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muni Time Lab</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Muni Time Lab</h1>
+    <p class="sub">Where Muni buses and trains spend their time, and what we could change. <span id="data-note"></span></p>
+  </div>
+  <nav id="tabs">
+    <button data-tab="city" class="active">City hotspots</button>
+    <button data-tab="route">Route explorer</button>
+    <button data-tab="signals">Traffic signals</button>
+    <button data-tab="buses">Every vehicle</button>
+    <button data-tab="stops">Stop consolidation</button>
+    <button data-tab="market">Market St trunk</button>
+    <button data-tab="about">Method</button>
+  </nav>
+</header>
+
+<main>
+  <!-- CITY -->
+  <section id="tab-city" class="tab active">
+    <div class="controls">
+      <span class="modes" id="city-modes"></span>
+      <label><input type="checkbox" id="city-vehicles" checked> Show vehicles</label>
+      <span class="legend" id="city-legend"></span>
+    </div>
+    <div class="split">
+      <div class="mapcol">
+        <div id="city-map" class="map"></div>
+        <div id="city-time" class="timebar"></div>
+        <div class="legend" id="city-vlegend"></div>
+      </div>
+      <div class="side">
+        <div id="fleet-headline" class="tiles"></div>
+        <h3>Worst sticking points <small>bus-hours lost per weekday vs free-flow</small></h3>
+        <ol id="hotspot-list" class="hot"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROUTE -->
+  <section id="tab-route" class="tab">
+    <div class="controls">
+      <label>Route <select id="route-select"></select></label>
+      <span class="legend" id="route-legend"></span>
+    </div>
+    <div id="route-tiles" class="tiles"></div>
+    <div class="split">
+      <div class="mapcol">
+        <div id="route-map" class="map"></div>
+        <div id="route-time" class="timebar"></div>
+      </div>
+      <div class="side">
+        <h3>Where the time goes, by hour</h3>
+        <div id="budget-hour" class="chart"></div>
+        <h3>End-to-end runtime <small>median, 90th percentile, and today's schedule</small></h3>
+        <div id="runtime-chart" class="chart"></div>
+        <h3>Traffic signals holding this route <small>average seconds held per trip</small></h3>
+        <div id="route-signals" class="stoplist" style="max-height:220px"></div>
+      </div>
+    </div>
+    <h3>Speed along the route by time of day <small>each cell = 100 m × 1 hour; hover for details</small></h3>
+    <div id="heatmap" class="chart wide"></div>
+    <h3>Seconds per trip spent in each 100 m, by activity</h3>
+    <div id="budget-bin" class="chart wide"></div>
+    <h3>Every trip on <span id="marey-day"></span> <small>time–distance diagram for a 3-hour window: each line is one bus; steep = fast, vertical = stuck, lines bunching together = buses arriving in clumps. The black line is the clock under the map; click the diagram to jump there.</small></h3>
+    <div id="marey" class="chart wide"></div>
+  </section>
+
+  <!-- SIGNALS -->
+  <section id="tab-signals" class="tab">
+    <p class="lede">Every signalized intersection in SF (SFMTA inventory), scored by how long buses and trains sit in the ~75 m queue before it:
+      stopped away from a bus stop, or crawling under 5 mph. Time spent at a bus stop right before a light (a near-side stop) is shown separately, since boarding and the red light overlap there.</p>
+    <div class="controls">
+      <label>Mode <select id="sig-mode"><option value="">All transit</option><option value="bus">Buses</option><option value="rail">Metro trains (surface)</option><option value="streetcar">F streetcar</option><option value="cable">Cable cars</option></select></label>
+      <label>When <select id="sig-hour"><option value="">All day</option></select></label>
+      <label>Rank by <select id="sig-rank"><option value="hours">Total time held (vehicle-hours/day)</option><option value="wait">Average wait per vehicle</option></select></label>
+      <span class="legend" id="sig-legend"></span>
+    </div>
+    <div id="sig-tiles" class="tiles"></div>
+    <div class="split">
+      <div id="sig-map" class="map"></div>
+      <div class="side">
+        <div id="sig-detail"></div>
+        <h3>Signals holding transit the most</h3>
+        <ol id="sig-list" class="hot"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- BUSES -->
+  <section id="tab-buses" class="tab">
+    <p class="lede">Each row is one vehicle (bus, train, streetcar or cable car) on <span id="bus-day"></span>. Sorted by the share of in-service time spent not moving.</p>
+    <div id="fleet-bar" class="chart wide"></div>
+    <div class="controls">
+      <label>Mode <select id="bus-mode"><option value="">All</option><option value="bus">Buses</option><option value="rail">Metro trains</option><option value="streetcar">Streetcars</option><option value="cable">Cable cars</option></select></label>
+      <label>Route <select id="bus-route"><option value="">All</option></select></label>
+      <label>Sort <select id="bus-sort">
+        <option value="stuck">Most time stuck</option>
+        <option value="service">Most hours in service</option>
+        <option value="layover">Most layover</option>
+        <option value="id">Bus number</option>
+      </select></label>
+    </div>
+    <div id="bus-timelines" class="chart wide"></div>
+  </section>
+
+  <!-- STOPS -->
+  <section id="tab-stops" class="tab">
+    <div class="controls">
+      <label>Route <select id="stop-route"></select></label>
+      <label>Target max spacing <input type="range" id="stop-target" min="300" max="1000" step="20" value="520"> <b id="stop-target-label"></b></label>
+      <button id="stop-auto">Auto-consolidate</button>
+      <button id="stop-reset" class="ghost">Reset</button>
+    </div>
+    <div class="controls params">
+      <label title="Extra time lost to decelerating into and accelerating out of a stop">Accel/decel loss <input type="number" id="p-accel" value="12" min="0" max="40"> s</label>
+      <label title="Door open/close, kneeling, re-entering traffic, independent of how many board">Fixed door time <input type="number" id="p-door" value="6" min="0" max="30"> s</label>
+      <label title="Average time a bus spends stopped when it does stop (doors + boarding). Used to turn measured stopped-seconds into how often buses halt at each stop.">Avg dwell per halt <input type="number" id="p-dwell" value="20" min="5" max="60"> s</label>
+      <label title="Walking speed for riders at removed stops">Walk speed <input type="number" id="p-walk" value="1.2" step="0.1" min="0.5" max="2"> m/s</label>
+      <label><input type="checkbox" id="p-protect" checked> Keep transfer stops</label>
+      <label><input type="checkbox" id="p-rapid"> Keep Rapid stops</label>
+    </div>
+    <div id="stop-tiles" class="tiles"></div>
+    <div class="split">
+      <div id="stop-map" class="map"></div>
+      <div class="side">
+        <div id="calib" class="note"></div>
+        <h3>Stops <small>click to remove/restore. Bar = estimated share of trips that halt there (from measured stopped time).</small></h3>
+        <div id="stop-list" class="stoplist"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MARKET -->
+  <section id="tab-market" class="tab">
+    <p class="lede">Several routes run the length of Market St on the surface, directly above the Muni Metro subway. What if they ended at a subway station and riders transferred down to the trains for the downtown leg? The buses saved could run more often on the rest of each route.</p>
+    <div class="controls">
+      <label>Hour <input type="range" id="mk-hour" min="6" max="22" value="8"> <b id="mk-hour-label"></b></label>
+      <label title="Walking from the bus stop to the platform, including stairs and fare gates">Transfer walk <input type="number" id="mk-walk" value="3" min="0" max="10" step="0.5"> min</label>
+      <label title="Extra perceived cost of transferring, used by planners (0 = count only real minutes)">Transfer penalty <input type="number" id="mk-penalty" value="0" min="0" max="15" step="1"> min</label>
+      <label title="Time for a truncated bus to turn around at the new terminal">Turnaround <input type="number" id="mk-turn" value="4" min="0" max="15" step="1"> min</label>
+    </div>
+    <div id="mk-tiles" class="tiles"></div>
+    <div class="split">
+      <div id="mk-map" class="map"></div>
+      <div class="side">
+        <h3>Routes to truncate</h3>
+        <div id="mk-routes"></div>
+      </div>
+    </div>
+    <h3>Rider trade-off <small>through-riders headed downtown: stay on the bus vs transfer to the subway</small></h3>
+    <div id="mk-table"></div>
+    <div id="mk-notes" class="note"></div>
+  </section>
+
+  <section id="tab-about" class="tab prose" ></section>
+</main>
+<div id="tip" class="tip" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
