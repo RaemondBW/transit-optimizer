@@ -143,7 +143,9 @@ th { color: var(--text-2); font-weight: 500; background: var(--bg); }
 .tip b { font-variant-numeric: tabular-nums; }
 .prose { max-width: 820px; }
 .prose p, .prose li { color: var(--text-2); }
-.map { overflow: hidden; position: relative; }
+.map { position: relative; }
+.map .maplibregl-canvas-container { border-radius: 8px; overflow: hidden; }
+.vpopup { z-index: 20; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
 .bus-dot { border-radius: 50%; border: 2px solid var(--surface); }
 
@@ -163,3 +165,29 @@ optgroup { font-style: normal; font-weight: 600; }
 .timebar .clock { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; min-width: 78px; }
 .timebar .tb-note { color: var(--text-3); font-size: 12px; width: 100%; }
 .timebar button { min-width: 38px; }
+
+.vpopup .maplibregl-popup-content { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 12px; }
+.vpopup .maplibregl-popup-tip { display: none; }
+.vpopup .maplibregl-popup-close-button { color: var(--text-2); font-size: 16px; padding: 2px 6px; }
+.vpanel { width: 190px; text-align: center; }
+.vpanel .vp-head { display: flex; gap: 6px; align-items: center; justify-content: center; font-size: 14px; padding: 0 14px; }
+.vpanel .vp-dest { color: var(--text-2); margin: 2px 0 2px; font-size: 12px; }
+.vpanel .vp-gauge { display: block; margin: 0 auto -6px; overflow: visible; }
+.vpanel .vp-track { fill: none; stroke: var(--grid); stroke-width: 9; stroke-linecap: round; }
+.vpanel .vp-value { fill: none; stroke-width: 9; stroke-linecap: round; }
+.vpanel .vp-ticks line { stroke: var(--text-3); stroke-width: 1; }
+.vpanel .vp-ticks text { fill: var(--text-3); font-size: 8px; text-anchor: middle; }
+.vpanel .vp-needle { stroke: var(--text); stroke-width: 2.5; stroke-linecap: round; }
+.vpanel .vp-hub { fill: var(--text); }
+.vpanel .vp-speed { line-height: 1; margin-top: -2px; }
+.vpanel .vp-num { font-size: 40px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.vpanel .vp-unit { font-size: 13px; color: var(--text-2); margin-left: 4px; }
+.vpanel .vp-status { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 16px; font-weight: 650; margin-top: 8px; }
+.vpanel .vp-status .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.vpanel .vp-where { color: var(--text-2); font-size: 12px; min-height: 15px; margin-top: 2px; }
+.map.maplibregl-map { overflow: visible; }
+
+/* hover panels have no close button; pinned (clicked) ones do */
+.vpopup:not(.pinned) .maplibregl-popup-close-button { display: none; }
+.vpopup:not(.pinned) .vpanel::after { content: "click to pin · Esc to close"; display: block; margin-top: 6px; color: var(--text-3); font-size: 11px; }
+.vpopup.pinned .vpanel::after { content: "Esc to close"; display: block; margin-top: 6px; color: var(--text-3); font-size: 11px; }

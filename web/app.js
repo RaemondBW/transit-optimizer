@@ -55,9 +55,23 @@ const hideTip = () => (tip.hidden = true);
 
 // ---------- data ----------
 const DATA = { routeCache: {}, rd: {} };
-const getJSON = (p) => fetch(p).then((r) => { if (!r.ok) throw new Error(p); return r.json(); });
+// Fetch JSON with a few retries: one dropped request (flaky link, a rebuild in
+// progress) shouldn't break a whole tab.
+async function getJSON(p, tries = 4) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(p);
+      if (!r.ok) throw new Error(`${p}: HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      if (i >= tries - 1) throw e;
+      await new Promise((res) => setTimeout(res, 300 * 2 ** i));
+    }
+  }
+}
 async function routeData(key) {
-  if (!DATA.routeCache[key]) DATA.routeCache[key] = getJSON(`data/route/${key}.json`).then((d) => (DATA.rd[key] = d));
+  if (!DATA.routeCache[key]) DATA.routeCache[key] = getJSON(`data/route/${key}.json`).then((d) => (DATA.rd[key] = d))
+    .catch((e) => { delete DATA.routeCache[key]; throw e; });  // allow a later retry
   return DATA.routeCache[key];
 }
 const routeByKey = (k) => DATA.net.routes.find((r) => r.key === k);
@@ -148,6 +162,112 @@ class GLMap {
   resize() { this.map.resize(); }
 }
 const makeMap = (id, opts) => new GLMap(id, opts);
+
+// Top-down vehicle icons, nose pointing up (north), one per mode x activity color.
+// Drawn at 2x for crisp edges; the map rotates them to the direction of travel.
+const VEHICLE_SHAPES = { bus: [12, 26], rail: [12, 40], streetcar: [12, 30], cable: [12, 20] };
+function vehicleIcon(mode, fill, outline) {
+  const [w, h] = VEHICLE_SHAPES[mode] || VEHICLE_SHAPES.bus, k = 2, pad = 3;
+  const c = document.createElement("canvas");
+  c.width = (w + pad * 2) * k; c.height = (h + pad * 2) * k;
+  const g = c.getContext("2d");
+  g.scale(k, k); g.translate(pad, pad);
+  const rr = (x, y, ww, hh, r) => { g.beginPath(); g.roundRect(x, y, ww, hh, r); };
+  rr(0, 0, w, h, [5, 5, 3, 3]); g.fillStyle = fill; g.fill();
+  g.lineWidth = 1.6; g.strokeStyle = outline; g.stroke();
+  g.fillStyle = "rgba(255,255,255,0.85)";               // windshield at the front
+  rr(2, 2.5, w - 4, 4, 1.5); g.fill();
+  g.fillStyle = "rgba(255,255,255,0.35)";               // side windows
+  for (let y = 9; y < h - 4; y += 5) { rr(1.6, y, 1.8, 3, 0.8); g.fill(); rr(w - 3.4, y, 1.8, 3, 0.8); g.fill(); }
+  if (mode === "rail") { g.fillStyle = outline; g.fillRect(0, h / 2 - 0.6, w, 1.2); } // two-car joint
+  return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
+}
+// One half of an articulated light-rail car: "front" has the nose and windshield,
+// "rear" the tail; each joins the other at a bellows so a train can bend in the middle.
+const HALF = [12, 20];
+function trainHalfIcon(part, fill, outline) {
+  const [w, h] = HALF, k = 2, pad = 3;
+  const c = document.createElement("canvas");
+  c.width = (w + pad * 2) * k; c.height = (h + pad * 2) * k;
+  const g = c.getContext("2d");
+  g.scale(k, k); g.translate(pad, pad);
+  const front = part === "front";
+  g.beginPath(); g.roundRect(0, 0, w, h, front ? [5, 5, 1, 1] : [1, 1, 4, 4]);
+  g.fillStyle = fill; g.fill(); g.lineWidth = 1.6; g.strokeStyle = outline; g.stroke();
+  g.fillStyle = "rgba(255,255,255,0.85)";
+  if (front) { g.beginPath(); g.roundRect(2, 2.5, w - 4, 4, 1.5); g.fill(); }
+  g.fillStyle = "rgba(255,255,255,0.35)";
+  for (let y = front ? 9 : 3; y < h - 3; y += 5) {
+    g.beginPath(); g.roundRect(1.6, y, 1.8, 3, 0.8); g.fill();
+    g.beginPath(); g.roundRect(w - 3.4, y, 1.8, 3, 0.8); g.fill();
+  }
+  g.fillStyle = outline;                                   // bellows at the joint
+  if (front) g.fillRect(1, h - 1.6, w - 2, 1.6); else g.fillRect(1, 0, w - 2, 1.6);
+  return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
+}
+GLMap.prototype.ensureVehicleIcons = function () {
+  if (this._icons) return;
+  this._icons = true;
+  for (const mode of Object.keys(VEHICLE_SHAPES)) {
+    STATE.slice(0, 6).forEach((_, code) => {
+      const outline = mode === "bus" ? css("--surface") : css("--text");
+      this.map.addImage(`veh-${mode}-${code}`, vehicleIcon(mode, stColor(code), outline), { pixelRatio: 2 });
+    });
+  }
+  STATE.slice(0, 6).forEach((_, code) => {
+    for (const part of ["front", "rear"])
+      this.map.addImage(`veh-rail${part}-${code}`, trainHalfIcon(part, stColor(code), css("--text")), { pixelRatio: 2 });
+  });
+};
+// Icon scale used by the symbol layer at a given MapLibre zoom (keep in sync with icon-size).
+const iconScale = (z) => (z <= 10 ? 0.45 : z <= 13 ? 0.45 + ((z - 10) / 3) * 0.3 : z <= 16 ? 0.75 + ((z - 13) / 3) * 0.5 : 1.25);
+// features: [{ lat, lon, icon, rot, tip, onClick }]
+GLMap.prototype.symbols = function (name, features, opts = {}) {
+  if (!this.loaded) { this.ready.then(() => this.symbols(name, features, opts)); return; }
+  this.ensureVehicleIcons();
+  let set = this.sets[name];
+  if (!set) {
+    const m = this.map, id = `set-${name}`;
+    m.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    m.addLayer({ id, type: "symbol", source: id, layout: {
+      "icon-image": ["get", "icon"], "icon-rotate": ["get", "rot"], "icon-rotation-alignment": "map",
+      "icon-allow-overlap": true, "icon-ignore-placement": true,
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.45, 13, 0.75, 16, 1.25] } });
+    set = { id, handlers: new Map(), hover: true };
+    // Icons are small and move during playback: pick the nearest one within
+    // HIT px of the cursor, matched by vehicle key (not list position).
+    const HIT = 12;
+    const nearest = (pt) => {
+      const hits = m.queryRenderedFeatures([[pt.x - HIT, pt.y - HIT], [pt.x + HIT, pt.y + HIT]], { layers: [id] });
+      let best = null, bd = Infinity;
+      for (const f of hits) {
+        const p = m.project(f.geometry.coordinates), d = Math.hypot(p.x - pt.x, p.y - pt.y);
+        if (d < bd) { bd = d; best = f; }
+      }
+      return best;
+    };
+    m.on("mousemove", (e) => {
+      const f = nearest(e.point);
+      if (f) {
+        m.getCanvas().style.cursor = "pointer"; set.hovering = true;
+        if (set.onHover) { if (set.hoverKey !== f.properties.k) { set.hoverKey = f.properties.k; set.onHover(f.properties.k); } }
+        else if (f.properties.tip) showTip(e.originalEvent, f.properties.tip);
+      } else if (set.hovering) {
+        set.hovering = false; m.getCanvas().style.cursor = ""; hideTip();
+        if (set.onHover) { set.hoverKey = null; set.onHover(null); }
+      }
+    });
+    m.on("mouseout", () => { if (set.onHover && set.hoverKey != null) { set.hoverKey = null; set.onHover(null); } });
+    m.on("click", (e) => { const f = nearest(e.point); const h = f && set.handlers.get(f.properties.k); if (h) { hideTip(); h(); } });
+    this.sets[name] = set;
+  }
+  set.handlers = new Map(features.filter((f) => f.onClick).map((f) => [f.key, f.onClick]));
+  if (opts.onHover) set.onHover = opts.onHover;
+  this.map.getSource(set.id).setData({ type: "FeatureCollection", features: features.map((f, i) => ({
+    type: "Feature", geometry: { type: "Point", coordinates: [f.lon, f.lat] },
+    properties: { i, k: f.key ?? i, icon: f.icon, rot: f.rot || 0, tip: f.tip || "" } })) });
+};
+const bearingOf = (a, b) => (Math.atan2((b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180), b[0] - a[0]) * 180) / Math.PI;
 // Split a route line into 100 m pieces so each can take its bin's color.
 function binPieces(route, binSize) {
   const pieces = [];
@@ -226,13 +346,159 @@ function positionsFor(h) {
   if (!POS[h]) POS[h] = getJSON(`data/positions/${String(h).padStart(2, "0")}.json`).catch(() => null);
   return POS[h];
 }
-function makeFleetLayer(gl, { filter = () => true, radius = 4, name = "fleet" } = {}) {
-  let data = null, dataHour = null, enabled = true;
-  const bisect = d3.bisector((p) => p[0]).right;
-  const colors = STATE.map((_, i) => stColor(i));
-  const ring = { bus: css("--surface") }, dark_ = css("--text");
-  return {
+// Where a vehicle is at time t: on a trip it travels along its route's geometry
+// between pings; otherwise a straight line. Returns null when there's no data.
+function fleetPosition(pts, t, data) {
+  const i = d3.bisector((p) => p[0]).right(pts, t) - 1;
+  if (i < 0 || i >= pts.length - 1) return null;
+  const a = pts[i], b = pts[i + 1];
+  if (b[0] - a[0] > 180) return null;
+  const f = (t - a[0]) / (b[0] - a[0]);
+  const label = a[4] ? data.routes[a[4] - 1] : null;
+  const shape = label ? routeByKeyFast(label) : null;
+  const onShape = shape && a[4] === b[4] && a[5] >= 0 && b[5] >= a[5] - 30;
+  const along = onShape ? a[5] + f * (b[5] - a[5]) : (a[5] >= 0 ? a[5] : null);
+  const ll = onShape ? pointAt(shape, along) : [(a[1] + f * (b[1] - a[1])) / 1e5, (a[2] + f * (b[2] - a[2])) / 1e5];
+  return { lat: ll[0], lon: ll[1], a, b, f, label, shape, along };
+}
+const VEHICLE_NAME = { bus: "Bus", rail: "Train", streetcar: "Streetcar", cable: "Cable car" };
+const fmtDist = (m) => (m < 300 ? `${Math.round(m * 3.281 / 10) * 10} ft` : `${(m / 1609).toFixed(m < 1609 ? 2 : 1)} mi`);
+
+function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
+  let data = null, dataHour = null, enabled = true, lastT = null;
+  const heading = new Map();          // last known heading per vehicle (kept while stopped)
+  let sel = null, popup = null, ui = null;
+
+  // ---- detail panel that rides along with the selected vehicle:
+  // a mini speedometer and one plain-language status.
+  const GAUGE_MAX = { bus: 40, rail: 50, streetcar: 40, cable: 15 };
+  const R = 52, CX = 70, CY = 64;
+  const arcPt = (v) => { const a = Math.PI * (1 - v); return [CX + R * Math.cos(a), CY - R * Math.sin(a)]; };
+  const arcPath = (v) => { const [x, y] = arcPt(Math.max(v, 0.001)); return `M${CX - R},${CY} A${R},${R} 0 0 1 ${x.toFixed(1)},${y.toFixed(1)}`; };
+  const buildPanel = () => {
+    const el = document.createElement("div");
+    el.className = "vpanel";
+    el.innerHTML = `<div class="vp-head"><span class="badge vp-route"></span><b class="vp-name"></b></div>
+      <div class="vp-dest"></div>
+      <svg class="vp-gauge" viewBox="0 0 140 76" width="168" height="91" aria-hidden="true">
+        <path class="vp-track" d="${arcPath(1)}" />
+        <path class="vp-value" d="${arcPath(0)}" />
+        <g class="vp-ticks"></g>
+        <line class="vp-needle" x1="${CX}" y1="${CY}" x2="${CX - R + 8}" y2="${CY}" />
+        <circle cx="${CX}" cy="${CY}" r="3.5" class="vp-hub" />
+      </svg>
+      <div class="vp-speed"><span class="vp-num">0</span><span class="vp-unit">mph</span></div>
+      <div class="vp-status"><i class="dot"></i><span class="vp-what"></span></div>
+      <div class="vp-where"></div>`;
+    const q = (c) => el.querySelector(c);
+    return { el, route: q(".vp-route"), name: q(".vp-name"), dest: q(".vp-dest"), value: q(".vp-value"), needle: q(".vp-needle"),
+             ticks: q(".vp-ticks"), num: q(".vp-num"), dot: q(".vp-status .dot"), what: q(".vp-what"), where: q(".vp-where"),
+             shown: 0, max: 40 };
+  };
+  const drawTicks = (max) => {
+    const step = max <= 15 ? 5 : 10;
+    ui.ticks.innerHTML = d3.range(0, max + 1, step).map((v) => {
+      const [x1, y1] = arcPt(v / max); const a = Math.PI * (1 - v / max);
+      const x0 = CX + (R - 7) * Math.cos(a), y0 = CY - (R - 7) * Math.sin(a);
+      const xl = CX + (R + 9) * Math.cos(a), yl = CY - (R + 9) * Math.sin(a);
+      return `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}"/><text x="${xl.toFixed(1)}" y="${(yl + 3).toFixed(1)}">${v}</text>`;
+    }).join("");
+  };
+  // signals along each route, from the signal analysis (approach position in m)
+  let sigIndex = null;
+  const signalsFor = (key) => {
+    if (!sigIndex) {
+      sigIndex = new Map();
+      for (const o of DATA.sig?.signals || []) for (const a of o.approaches) {
+        if (!sigIndex.has(a.key)) sigIndex.set(a.key, []);
+        sigIndex.get(a.key).push({ d: a.along, name: o.name });
+      }
+    }
+    return sigIndex.get(key) || [];
+  };
+  // One status for the vehicle, consistent with the speed shown.
+  const describe = (p, mph) => {
+    const code = Math.min((p.f < 0.5 ? p.a : p.b)[3], 5);
+    if (!p.shape || p.along == null) {
+      if (code === 4) return { key: 4, what: "Laying over", where: "between trips" };
+      return mph >= 5 ? { key: 5, what: "Moving", where: "not in service" } : { key: 4, what: "Parked / not in service", where: "" };
+    }
+    if (mph >= 5) return { key: 0, what: "Moving", where: "" };
+    const stop = p.shape.stops.find((st) => p.along >= st.d - 40 && p.along <= st.d + 30);
+    if (stop) return { key: 2, what: "At a bus stop", where: stop.name };
+    const sig = signalsFor(p.shape.key).find((sg) => sg.d - p.along >= -12 && sg.d - p.along <= 75);
+    if (sig) return { key: 3, what: "At a red light", where: sig.name };
+    return { key: 1, what: mph > 0.5 ? "Crawling in traffic" : "Stuck in traffic", where: "" };
+  };
+  // Hovering a vehicle shows its panel; clicking pins it (stays open, can Follow).
+  let pinned = null, hovered = null, hideTimer = null, side = null;
+  // Escape deselects (on whichever map is visible)
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !sel || !gl.map.getContainer().offsetParent) return;
+    pinned = null; hovered = null; show(null);
+  });
+  const show = (target) => {
+    const changed = !sel || !target || sel.vid !== target.vid;
+    sel = target;
+    if (!sel) {
+      if (popup) { popup._quiet = true; popup.remove(); popup._quiet = false; }
+      gl.points(`${name}-sel`, [], { hover: false });
+      return;
+    }
+    if (!popup) {
+      ui = buildPanel();
+      popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false, offset: 22, maxWidth: "240px", className: "vpopup",
+                                     anchor: "left" })
+        .setDOMContent(ui.el);
+      popup.on("close", () => { if (popup._quiet) return; pinned = null; show(hovered); });
+    }
+    popup.getElement()?.classList.toggle("pinned", !!pinned && sel.vid === pinned.vid);
+    if (changed) {
+      ui.max = GAUGE_MAX[sel.mode] || 40;
+      drawTicks(ui.max);
+      ui.shown = null;      // jump straight to this vehicle's speed
+      side = null;          // pick a side for the new vehicle
+    }
+    if (lastT != null) fl.update(lastT);
+  };
+  const select = (vid, mode) => { pinned = { vid, mode }; show(pinned); };
+  const hover = (vid) => {
+    clearTimeout(hideTimer);
+    if (vid != null) {
+      const mode = data?.v[vid]?.[0] || "bus";
+      hovered = { vid, mode };
+      show(hovered);
+    } else {
+      hovered = null;
+      hideTimer = setTimeout(() => show(pinned), 150);  // brief grace so moving between icons doesn't flicker
+    }
+  };
+  const updatePanel = (vid, mode, p) => {
+    ui.name.textContent = `${VEHICLE_NAME[mode] || "Vehicle"} ${vid}`;
+    if (p?.shape) {
+      ui.route.textContent = p.shape.route; ui.route.style.background = p.shape.color; ui.route.hidden = false;
+      ui.dest.textContent = `to ${p.shape.headsign}`;
+    } else { ui.route.hidden = true; ui.dest.textContent = ""; }
+    if (!p) { ui.what.textContent = "No GPS right now"; ui.where.textContent = ""; ui.dot.style.background = css("--text-3"); return; }
+    const target = Math.max(0, p.a[6] + p.f * (p.b[6] - p.a[6]));   // reported speed, blended between fixes
+    ui.shown = ui.shown == null ? target : ui.shown + (target - ui.shown) * 0.25;   // ease the needle
+    const mph = ui.shown, frac = Math.min(mph / ui.max, 1);
+    const st = describe(p, mph);
+    const color = stColor(st.key);
+    ui.value.setAttribute("d", arcPath(frac));
+    ui.value.style.stroke = color;
+    const [nx, ny] = arcPt(frac);
+    ui.needle.setAttribute("x2", (CX + (nx - CX) * 0.85).toFixed(1));
+    ui.needle.setAttribute("y2", (CY + (ny - CY) * 0.85).toFixed(1));
+    ui.num.textContent = Math.round(mph);
+    ui.dot.style.background = color;
+    ui.what.textContent = st.what;
+    ui.where.textContent = st.where;
+  };
+
+  const fl = {
     async update(t) {
+      lastT = t;
       const h = Math.floor(t / 3600);
       if (h !== dataHour) {
         dataHour = h;
@@ -240,41 +506,70 @@ function makeFleetLayer(gl, { filter = () => true, radius = 4, name = "fleet" } 
         positionsFor(h + 1); // prefetch
         if (h !== dataHour) return;
       }
-      if (!enabled || !data) { gl.points(name, []); return; }
+      if (!enabled || !data) { gl.symbols(name, []); if (popup) popup.remove(); return; }
       const feats = [];
+      let selPos = null;
+      const z = gl.map.getZoom(), scale = iconScale(z);
+      const mpp = (40075016.686 * Math.cos((gl.map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** z);
       for (const [vid, [mode, pts]] of Object.entries(data.v)) {
-        if (!filter(mode)) continue;
-        const i = bisect(pts, t) - 1;
-        if (i < 0 || i >= pts.length - 1) continue;
-        const a = pts[i], b = pts[i + 1];
-        if (b[0] - a[0] > 180) continue;
-        const f = (t - a[0]) / (b[0] - a[0]);
-        const code = Math.min(a[3], 5);
-        const label = a[4] ? data.routes[a[4] - 1] : null;
-        const route = label ? label.replace("_", " → dir ") : "no trip";
-        const bus = mode === "bus";
-        // On a trip: travel along the route's street geometry between the two pings
-        // (by distance along the route), so fast playback follows corners instead of
-        // cutting straight across blocks. Off-trip moves stay straight lines.
-        let lat, lon;
-        const shape = label && a[4] === b[4] && a[5] >= 0 && b[5] >= a[5] - 30 ? routeByKeyFast(label) : null;
-        if (shape) {
-          [lat, lon] = pointAt(shape, a[5] + f * (b[5] - a[5]));
-        } else {
-          lat = (a[1] + f * (b[1] - a[1])) / 1e5; lon = (a[2] + f * (b[2] - a[2])) / 1e5;
+        if (!filter(mode, undefined)) continue;  // cheap pre-check before positioning
+        const p = fleetPosition(pts, t, data);
+        if (!p || !filter(mode, p.label)) continue;
+        // heading: where the vehicle will be a few seconds later
+        const ahead = fleetPosition(pts, t + 8, data);
+        let rot = heading.get(vid) ?? 0;
+        if (ahead && Math.hypot((ahead.lat - p.lat) * 111000, (ahead.lon - p.lon) * 88000) > 1.5) {
+          rot = bearingOf([p.lat, p.lon], [ahead.lat, ahead.lon]);
+          heading.set(vid, rot);
+          if (ahead.along != null && p.along != null && ahead.label === p.label && Math.abs(ahead.along - p.along) > 1)
+            heading.set(`${vid}:dir`, ahead.along > p.along ? 1 : -1);
         }
-        feats.push({ lat, lon,
-          radius: bus ? radius : radius + 1.5, fill: colors[code], stroke: bus ? ring.bus : dark_, strokeWidth: bus ? 1 : 2,
-          tip: `${MODES[mode] ? MODES[mode].replace(/ \(.*\)/, "") : mode} ${vid} · ${route}<br>${STATE[code].label}` });
+        const code = Math.min((p.f < 0.5 ? p.a : p.b)[3], 5);
+        const route = p.shape ? `${p.shape.route} → ${p.shape.headsign}` : "not on a trip";
+        const common = { key: vid, tip: `${VEHICLE_NAME[mode] || mode} ${vid} · ${route}<br>${STATE[code].label} · click for details`,
+          onClick: () => select(vid, mode) };
+        if (mode === "rail" && p.shape && p.along != null) {
+          // Articulated train: each half sits on the track at its own spot and turns
+          // with its own piece of curve, so the train bends at the middle joint.
+          const halfM = HALF[1] * scale * mpp;
+          const dir = heading.get(`${vid}:dir`) ?? 1;  // +1: travelling toward higher "along"
+          for (const [part, off] of [["front", halfM / 2], ["rear", -halfM / 2]]) {
+            const c = Math.min(Math.max(p.along + dir * off, 0), p.shape.length);
+            const at = pointAt(p.shape, c);
+            const r = bearingOf(pointAt(p.shape, c - dir * 4), pointAt(p.shape, c + dir * 4));
+            feats.push({ ...common, lat: at[0], lon: at[1], rot: r, icon: `veh-rail${part}-${code}` });
+          }
+        } else {
+          feats.push({ ...common, lat: p.lat, lon: p.lon, rot, icon: `veh-${VEHICLE_SHAPES[mode] ? mode : "bus"}-${code}` });
+        }
+        if (sel && sel.vid === vid) selPos = p;
       }
-      gl.points(name, feats);
+      gl.symbols(name, feats, { onHover: hover });
+      // highlight ring around the selected vehicle (drawn above the icons, see-through)
+      gl.points(`${name}-sel`, sel && selPos ? [{ lat: selPos.lat, lon: selPos.lon, radius: 17, fill: css("--accent"),
+        fillOpacity: 0.18, stroke: css("--accent"), strokeWidth: 3 }] : [], { hover: false });
+      if (sel) {
+        updatePanel(sel.vid, sel.mode, selPos);
+        if (selPos) {
+          // Keep the panel on one side of the vehicle; only flip when it would run off the map.
+          const px = gl.map.project([selPos.lon, selPos.lat]).x, W = gl.map.getCanvas().clientWidth, need = 240;
+          const want = side == null ? (px > W / 2 ? "right" : "left")
+            : side === "left" && px > W - need - 10 ? "right"
+            : side === "right" && px < need + 10 ? "left" : side;
+          if (want !== side) { side = want; popup.options.anchor = side; }
+          popup.setLngLat([selPos.lon, selPos.lat]);
+          if (!popup.isOpen()) popup.addTo(gl.map);
+          popup.getElement()?.classList.toggle("pinned", !!pinned && sel.vid === pinned.vid);
+        }
+      }
     },
     setEnabled(v) { enabled = v; },
   };
+  return fl;
 }
 function fleetLegend(el) {
   el.innerHTML = [0, 3, 2, 1, 4, 5].map((i) => `<span><i style="background:${stColor(i)}"></i>${STATE[i].label}</span>`).join("") +
-    `<span class="muted">· trains, streetcars & cable cars have a dark ring</span>`;
+    `<span class="muted">· longer icons are trains · click any vehicle for details</span>`;
 }
 
 // =====================================================================
@@ -284,21 +579,27 @@ const city = { layer: null };
 async function initCity() {
   city.map = makeMap("city-map");
   // create layers bottom-to-top: speed lines, hotspot rings, vehicles
-  city.map.lines("speed", []); city.map.points("hot", []); city.map.points("fleet", []);
+  city.map.lines("speed", []); city.map.points("hot", []); city.map.symbols("fleet", []);
   speedLegend($("#city-legend"));
   city.modes = new Set(Object.keys(MODES));
   $("#city-modes").innerHTML = Object.entries(MODES).map(([m, l]) => `<label><input type="checkbox" data-mode="${m}" checked> ${l.replace(/ \(.*\)/, "")}</label>`).join("");
   $("#city-modes").querySelectorAll("input").forEach((cb) => cb.addEventListener("change", () => {
     cb.checked ? city.modes.add(cb.dataset.mode) : city.modes.delete(cb.dataset.mode);
     drawCity(city.tb.hour);
+    drawHotspots();
     city.fleet.update(city.tb.t);
   }));
-  city.fleet = makeFleetLayer(city.map, { filter: (m) => city.modes.has(m), radius: 3.5 });
+  city.fleet = makeFleetLayer(city.map, { filter: (m) => city.modes.has(m) });
   $("#city-vehicles").addEventListener("change", (e) => { city.fleet.setEnabled(e.target.checked); city.fleet.update(city.tb.t); });
   fleetLegend($("#city-vlegend"));
   // Load every route's heat grid once (small) for the citywide speed map.
   city.heat = {};
-  await Promise.all(DATA.net.routes.map(async (r) => { city.heat[r.key] = (await routeData(r.key)).heat; }));
+  // one small bundle of every route's speed grid; fall back to per-route files, skipping any that fail
+  try {
+    city.heat = await getJSON("data/heat_all.json");
+  } catch (e) {
+    await Promise.allSettled(DATA.net.routes.map(async (r) => { city.heat[r.key] = (await routeData(r.key)).heat; }));
+  }
   city.tb = makeTimebar($("#city-time"), {
     t: 17 * 3600,
     onTime: (t, hourChanged) => { if (hourChanged) drawCity(Math.min(Math.max(Math.floor(t / 3600), 5), 23)); city.fleet.update(t); },
@@ -310,7 +611,7 @@ function drawCity(hour) {
   const feats = [];
   for (const r of DATA.net.routes) {
     if (!city.modes.has(modeOf(r))) continue;
-    const row = city.heat[r.key][hour];
+    const row = city.heat[r.key]?.[hour];
     if (!row) continue;
     // merge consecutive 100 m pieces that share a color into one line
     let run = null;
@@ -341,26 +642,37 @@ function causeBar(c) {
 }
 function drawHotspots() {
   const ol = $("#hotspot-list");
-  const top = DATA.hot.slice(0, 40);
+  if (!city.hotLegend) {
+    const lg = document.createElement("div");
+    lg.className = "legend";
+    lg.style.margin = "6px 0";
+    lg.innerHTML = [3, 2, 1].map((s) => `<span><i style="background:${stColor(s)}"></i>${STATE[s].label}</span>`).join("");
+    ol.before(lg);
+    city.hotLegend = true;
+  }
+  // only the lost time of the modes that are switched on; re-rank by that
+  const rows = DATA.hot.map((h) => {
+    const bm = h.by_mode || { bus: h.bus_hours };
+    const hours = sum(Object.entries(bm).filter(([m]) => city.modes.has(m)).map(([, v]) => v));
+    const routes = h.routes.filter((r) => city.modes.has(modeOf(routeByKeyFast(`${r}_0`) || routeByKeyFast(`${r}_1`) || {})));
+    return { h, hours, routes };
+  }).filter((r) => r.hours >= 0.05).sort((a, b) => b.hours - a.hours).slice(0, 40);
+  ol.innerHTML = "";
+  if (!rows.length) ol.innerHTML = `<li class="muted">No hotspots for the selected modes.</li>`;
+  const max = rows[0]?.hours || 1;
   const rings = [];
-  const max = top[0].bus_hours;
-  top.forEach((h, i) => {
+  rows.forEach(({ h, hours, routes }, i) => {
     const li = document.createElement("li");
     const dom = h.cause.stopped >= h.cause.dwell && h.cause.stopped >= h.cause.crawl ? "mostly signals/traffic stops"
-      : h.cause.crawl >= h.cause.dwell ? "mostly crawling in traffic" : "mostly time at bus stops";
+      : h.cause.crawl >= h.cause.dwell ? "mostly crawling in traffic" : "mostly time at stops";
     li.innerHTML = `<span class="n">${h.name}</span> <span class="muted">(${h.heading}-bound)</span><br>
-      <b>${h.bus_hours.toFixed(1)}</b> bus-h/day · ${dom}<div class="r">Routes ${h.routes.join(", ")}</div>${causeBar(h.cause)}`;
+      <b>${hours.toFixed(1)}</b> vehicle-h/day · ${dom}<div class="r">Routes ${routes.join(", ")}</div>${causeBar(h.cause)}`;
     li.onclick = () => city.map.view([h.lat, h.lon], 16);
     ol.appendChild(li);
-    rings.push({ lat: h.lat, lon: h.lon, radius: 4 + 10 * Math.sqrt(h.bus_hours / max), fill: css("--text"), fillOpacity: 0,
-      stroke: css("--text"), strokeWidth: 1.5, tip: `#${i + 1} ${h.name}: ${h.bus_hours.toFixed(1)} vehicle-h/day lost` });
+    rings.push({ lat: h.lat, lon: h.lon, radius: 4 + 10 * Math.sqrt(hours / max), fill: css("--text"), fillOpacity: 0,
+      stroke: css("--text"), strokeWidth: 1.5, tip: `#${i + 1} ${h.name}: ${hours.toFixed(1)} vehicle-h/day lost` });
   });
   city.map.points("hot", rings);
-  const lg = document.createElement("div");
-  lg.className = "legend";
-  lg.style.margin = "6px 0";
-  lg.innerHTML = [3, 2, 1].map((s) => `<span><i style="background:${stColor(s)}"></i>${STATE[s].label}</span>`).join("");
-  ol.before(lg);
 }
 function drawFleetHeadline() {
   const tot = Array(8).fill(0);
@@ -380,30 +692,42 @@ function drawFleetHeadline() {
 const rt = { key: null, data: null, play: { t: 17 * 3600 } };
 const MODES = { rail: "Muni Metro (light rail)", bus: "Buses", streetcar: "F streetcar", cable: "Cable cars" };
 const modeOf = (r) => r.mode || "bus";
-function fillRouteSelect(sel, onChange, filter = () => true) {
+// Two dropdowns: route (grouped by mode) and direction (by destination).
+// onChange receives the route-direction key, e.g. "38R_0".
+function makeRoutePicker(routeSel, dirSel, onChange, initialKey) {
+  const byRoute = d3.group(DATA.net.routes, (r) => r.route);
   for (const [mode, label] of Object.entries(MODES)) {
-    const list = DATA.net.routes.filter((r) => filter(r) && modeOf(r) === mode);
-    if (!list.length) continue;
+    const ids = [...byRoute.keys()].filter((id) => modeOf(byRoute.get(id)[0]) === mode);
+    if (!ids.length) continue;
     const grp = document.createElement("optgroup");
     grp.label = label;
-    for (const r of list) {
-      const o = document.createElement("option");
-      o.value = r.key;
-      o.textContent = `${r.route} ${titleCase(r.name)} → ${r.headsign}`;
-      grp.appendChild(o);
+    for (const id of ids) {
+      const r = byRoute.get(id)[0];
+      grp.insertAdjacentHTML("beforeend", `<option value="${id}">${id} ${titleCase(r.name)}</option>`);
     }
-    sel.appendChild(grp);
+    routeSel.appendChild(grp);
   }
-  sel.addEventListener("change", () => onChange(sel.value));
+  const fillDirs = (keepDir) => {
+    const dirs = byRoute.get(routeSel.value).slice().sort((x, y) => x.dir - y.dir);
+    dirSel.innerHTML = dirs.map((r) => `<option value="${r.key}">to ${r.headsign}</option>`).join("");
+    const same = dirs.find((r) => r.dir === keepDir);
+    if (same) dirSel.value = same.key;
+  };
+  const init = routeByKey(initialKey) || DATA.net.routes[0];
+  routeSel.value = init.route;
+  fillDirs(init.dir);
+  routeSel.addEventListener("change", () => { fillDirs(routeByKey(dirSel.value)?.dir ?? 0); onChange(dirSel.value); });
+  dirSel.addEventListener("change", () => onChange(dirSel.value));
+  return dirSel.value;
 }
 function initRoute() {
   rt.map = makeMap("route-map");
   ["speed"].forEach((n) => rt.map.lines(n, []));
-  ["stops", "signals", "buses"].forEach((n) => rt.map.points(n, []));
+  ["stops", "signals"].forEach((n) => rt.map.points(n, []));
+  rt.map.symbols("fleet", []);
+  rt.fleet = makeFleetLayer(rt.map, { filter: (mode, label) => label === undefined || label === rt.key });
   speedLegend($("#route-legend"));
-  const sel = $("#route-select");
-  fillRouteSelect(sel, (k) => loadRoute(k));
-  sel.value = "38R_0";
+  const startKey = makeRoutePicker($("#route-select"), $("#route-dir"), (k) => loadRoute(k), "38R_0");
   rt.tb = makeTimebar($("#route-time"), {
     t: 17 * 3600,
     onTime: (t, hourChanged) => {
@@ -413,7 +737,7 @@ function initRoute() {
       drawPlayback();
     },
   });
-  loadRoute(sel.value);
+  loadRoute(startKey);
 }
 async function loadRoute(key) {
   rt.key = key; rt.route = routeByKey(key); rt.data = await routeData(key);
@@ -653,20 +977,7 @@ function drawPlayback() {
   const t = rt.play.t;
   if (rt.win && (t < rt.win[0] || t >= rt.win[1])) drawMarey();
   if (rt.clockLine && rt.mareyScales) rt.clockLine.attr("y1", rt.mareyScales.y(t)).attr("y2", rt.mareyScales.y(t));
-  const buses = [];
-  for (const tr of rt.data.marey) {
-    const p = tr.p;
-    if (t < p[0][0] || t > p[p.length - 1][0]) continue;
-    let i = d3.bisector((q) => q[0]).right(p, t) - 1;
-    i = Math.max(0, Math.min(i, p.length - 2));
-    const a = p[i], b = p[i + 1];
-    if (b[0] - a[0] > 300) continue;
-    const f = (t - a[0]) / (b[0] - a[0] || 1);
-    const pos = pointAt(rt.route, a[1] + f * (b[1] - a[1]));
-    buses.push({ lat: pos[0], lon: pos[1], radius: 7, fill: stColor(a[2]), stroke: css("--surface"), strokeWidth: 2,
-      tip: `Vehicle ${tr.v}: ${STATE[a[2]].label}` });
-  }
-  rt.map.points("buses", buses);
+  rt.fleet.update(t);  // vehicles on this route, clickable for details
 }
 
 // =====================================================================
@@ -753,9 +1064,7 @@ const sc = { removed: new Set() };
 function initStops() {
   sc.map = makeMap("stop-map");
   sc.map.lines("route", []); sc.map.points("stops", []);
-  const sel = $("#stop-route");
-  fillRouteSelect(sel, (k) => loadStops(k));
-  sel.value = "38_0";
+  const startKey = makeRoutePicker($("#stop-route"), $("#stop-dir"), (k) => loadStops(k), "38_0");
   const tg = $("#stop-target");
   const lab = () => ($("#stop-target-label").textContent = `${tg.value} m (${Math.round(tg.value * 3.28)} ft)`);
   tg.addEventListener("input", lab); lab();
@@ -772,7 +1081,7 @@ function initStops() {
     $("#calib").innerHTML = `<b>Reality check from Muni's own Rapid routes</b> (same streets, 7am–7pm):<br>` + cal.map(line).join("<br>") +
       `<br><span class="muted">Where Rapids pull ahead, the gain includes boarding time at the skipped stops; when a stop is removed for real those riders board at a neighbor, so expect less per stop. Where Rapids don't pull ahead (one day of data, so noisy), the corridor's delay is mostly signals and traffic, not stops, so skipping stops alone doesn't help.</span>`;
   }
-  loadStops(sel.value);
+  loadStops(startKey);
 }
 function isProtected(r, s, i) {
   if (i === 0 || i === r.stops.length - 1) return true;

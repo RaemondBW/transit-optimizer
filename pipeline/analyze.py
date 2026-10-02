@@ -10,6 +10,7 @@ Outputs
   calibration.json    observed seconds saved per skipped stop (Rapid vs local)
 """
 import json
+import os
 import pickle
 import sys
 from pathlib import Path
@@ -34,6 +35,15 @@ TERMINAL_ZONE = 300  # m at each route end excluded from hotspot ranking
 MPS_TO_MPH = 2.23694
 
 STATES = ["moving", "crawl", "dwell", "stopped"]  # in-trip ping states
+
+
+
+def write_atomic(path, text):
+    """Write via a temp file + rename so the dashboard never reads a half-written file."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)  # noqa
+    os.replace(tmp, path)
 
 
 def key(rid, d):
@@ -298,6 +308,7 @@ def main():
 
         # -- Marey / playback: sample day, compact [t, along, state]
         md = mine[mine.day == SAMPLE_DAY]
+        md = md[~stale_repeat(md.trip.values, md.x.values, md.y.values, md.average_speed.values)]
         marey = []
         for tid, g in md.groupby("trip"):
             marey.append({"v": int(g.vehicle_id.iat[0]),
@@ -306,7 +317,7 @@ def main():
         out = {"key": k, "heat": heat, "bin": BIN, "budget_bin": budget_bin, "budget_hour": budget_hour,
                "runtime": runtime, "sched_runtime": sched, "stops": stops_out, "marey": marey,
                "sample_day": SAMPLE_DAY}
-        (WEB / "route" / f"{k}.json").write_text(json.dumps(out, separators=(",", ":")))
+        write_atomic(WEB / "route" / f"{k}.json", json.dumps(out, separators=(",", ":")))
 
         m = meta.get(rid, {})
         route_list.append({
@@ -324,7 +335,10 @@ def main():
         if rid.endswith("R") and (rid[:-1], d) in routes:
             calib_rows.append((rid, d))
 
-    (WEB / "network.json").write_text(json.dumps(
+    # every route's hourly speed grid in one small file (the city map needs only this)
+    write_atomic(WEB / "heat_all.json", json.dumps({r["key"]: json.loads((WEB / "route" / f"{r['key']}.json").read_text())["heat"]
+                                                    for r in route_list}, separators=(",", ":")))
+    write_atomic(WEB / "network.json", json.dumps(
         {"routes": route_list, "days": days, "sample_day": SAMPLE_DAY, "bin": BIN, "source": source,
          "states": STATES}, separators=(",", ":")))
 
@@ -367,6 +381,7 @@ def hotspots(hb, trips, routes, n_days):
             stops_all.append((r["x"][k], r["y"][k], s["name"], s["name"].startswith(UNDERGROUND_STATIONS)))
     sx = np.array([s[0] for s in stops_all]); sy = np.array([s[1] for s in stops_all])
     s_ug = np.array([s[3] for s in stops_all])
+    mode_of = {r["route_id"]: r["mode"] for r in routes.values()}
     out = []
     for cell, g in df.groupby("cell"):
         delay_h = g.delay.sum() / n_days / 3600
@@ -382,11 +397,14 @@ def hotspots(hb, trips, routes, n_days):
             "lat": round(float(lat), 5), "lon": round(float(lon), 5),
             "name": stops_all[near][2].replace("Metro ", "") + (" (subway)" if cell[3] else ""), "subway": bool(cell[3]), "heading": ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][cell[2]],
             "bus_hours": round(float(delay_h), 2),
+            # same lost time split by mode, so the dashboard can filter (bus / rail / streetcar / cable)
+            "by_mode": {m: round(float(v) / n_days / 3600, 3) for m, v in
+                        g.groupby(g.route_id.map(lambda r: mode_of.get(r, "bus"))).delay.sum().items() if v > 0},
             "routes": sorted({f"{a}" for a in g.route_id}),
             "cause": {k: round(float(tot[k] / slow), 3) if slow else 0 for k in ("crawl", "dwell", "stopped")},
         })
     out.sort(key=lambda o: -o["bus_hours"])
-    (WEB / "hotspots.json").write_text(json.dumps(out[:150], separators=(",", ":")))
+    write_atomic(WEB / "hotspots.json", json.dumps(out[:600], separators=(",", ":")))
     print(f"hotspots: {len(out)} cells, top: {out[0]['name']} {out[0]['bus_hours']} bus-h/day")
 
 
@@ -429,7 +447,7 @@ def calibration(pairs, routes, contrib, ext, n_days):
                     "local_min": round(float(t_loc) / 60, 1), "rapid_min": round(float(t_rap) / 60, 1),
                     "local_stops": n_loc, "rapid_stops": n_rap, "sec_per_skipped_stop": round(float(per_stop), 1)})
         print(f"calibration {rid[:-1]}/{rid} d{d}: {out[-1]}")
-    (WEB / "calibration.json").write_text(json.dumps(out, separators=(",", ":")))
+    write_atomic(WEB / "calibration.json", json.dumps(out, separators=(",", ":")))
 
 
 def vehicles(routes):
@@ -446,6 +464,12 @@ def vehicles(routes):
     # distance along the route shape, so playback can follow the street between pings
     al = pd.Series(tr.along.values, index=pd.MultiIndex.from_arrays([tr.vehicle_id, tr.t]))
     v["along"] = al[~al.index.duplicated()].reindex(mi).values
+    if "route_along" in v:  # pings outside matched trips: use their reported route
+        fill = v.along.isna() & v.route_along.notna()
+        v.loc[fill, "along"] = v.loc[fill, "route_along"]
+        v["shape_label"] = v.label.where(v.label.notna(), v.route_key.where(fill, None))
+    else:
+        v["shape_label"] = v.label
     v = v.sort_values(["vehicle_id", "t"])
     # outside trips: layover (short stationary gap between trips), deadhead, parked
     # codes: 0-3 = in-trip states, 4 layover, 5 deadhead/other moving, 6 parked, 7 no data
@@ -490,26 +514,40 @@ def vehicles(routes):
         out[str(vid)] = segs
         pos_rows.append(pd.DataFrame({"v": int(vid), "t": t, "x": g.x.values, "y": g.y.values, "c": codes,
                                       "al": np.nan_to_num(g.along.values, nan=-1).round().astype(int),
-                                      "lb": [x if isinstance(x, str) else "" for x in labels],
+                                      "sp": g.average_speed.values,
+                                      "lb": [x if isinstance(x, str) and x else "" for x in g.shape_label.values],
                                       "m": g.vclass.iat[0]}))
         summary.append({"v": int(vid), "mode": g.vclass.iat[0], "routes": main_routes.index[:3].tolist(),
                         "hours": [round(x / 3600, 2) for x in tot]})
-    (WEB / "vehicles.json").write_text(json.dumps({"day": SAMPLE_DAY, "summary": summary, "segments": out},
+    write_atomic(WEB / "vehicles.json", json.dumps({"day": SAMPLE_DAY, "summary": summary, "segments": out},
                                                   separators=(",", ":")))
     print(f"vehicles: {pd.Series([b['mode'] for b in summary]).value_counts().to_dict()}")
     positions(pd.concat(pos_rows, ignore_index=True))
 
 
+def stale_repeat(vid, x, y, speed):
+    """Pings that repeat the vehicle's previous position while it reports moving.
+
+    The feed re-sends the last GPS fix (~25% of pings), then the next fix jumps
+    ahead; animating through those makes vehicles stall and then dash. Keeping
+    the first time each position was reported gives steady motion. Repeats at
+    0 mph are real stops and are kept.
+    """
+    same = np.r_[False, (vid[1:] == vid[:-1]) & (x[1:] == x[:-1]) & (y[1:] == y[:-1])]
+    return same & (speed > 2)
+
+
 def positions(p, min_gap=20, pad=180):
     """Every vehicle's GPS track for the sample day, in hourly files for map playback.
 
-    web/data/positions/<HH>.json = {"routes": [labels], "v": {vehicle: [mode, [[t, lat*1e5, lon*1e5, code, route_idx, along_m], ...]]}}
+    web/data/positions/<HH>.json = {"routes": [labels], "v": {vehicle: [mode, [[t, lat*1e5, lon*1e5, code, route_idx, along_m, mph], ...]]}}
     along_m is the distance along that route's shape (-1 when not on a trip).
     Pings are thinned to one per `min_gap` s; each file also holds `pad` s on
     either side of its hour so the client can interpolate across the boundary.
     Parked/yard pings (code 6) are dropped.
     """
     p = p[p.c != 6].sort_values(["v", "t"])
+    p = p[~stale_repeat(p.v.values, p.x.values, p.y.values, p.sp.values)]
     # thin to >= min_gap s per vehicle
     keep = np.ones(len(p), bool)
     last_v, last_t = None, -1e9
@@ -526,17 +564,21 @@ def positions(p, min_gap=20, pad=180):
     p["ri"] = p.lb.map(idx).fillna(0).astype(int)
     d = WEB / "positions"
     d.mkdir(exist_ok=True)
-    for old in d.glob("*.json"):
-        old.unlink()
+    written = set()
     total = 0
     for h in range(0, 25):
         sel = p[(p.t >= h * 3600 - pad) & (p.t < (h + 1) * 3600 + pad)]
         if sel.empty:
             continue
-        veh = {str(vv): [g.m.iat[0], g[["t", "lat", "lon", "c", "ri", "al"]].values.tolist()] for vv, g in sel.groupby("v")}
+        veh = {str(vv): [g.m.iat[0], g[["t", "lat", "lon", "c", "ri", "al", "sp"]].astype(int).values.tolist()]
+               for vv, g in sel.groupby("v")}
         path = d / f"{h:02d}.json"
-        path.write_text(json.dumps({"routes": labels, "v": veh}, separators=(",", ":")))
+        write_atomic(path, json.dumps({"routes": labels, "v": veh}, separators=(",", ":")))
+        written.add(path.name)
         total += path.stat().st_size
+    for old in d.glob("*.json"):  # only now drop hours that no longer have data
+        if old.name not in written:
+            old.unlink()
     print(f"positions: {len(p):,} pings, {total / 1e6:.1f} MB in hourly files")
 
 
@@ -665,7 +707,7 @@ def market(routes, trips, ext, n_days):
             sub_obs.setdefault(direction, {})[pair] = {
                 str(h): [round(m / 60, 1), round(p / 60, 1), int(n), round(n / n_days, 1)]
                 for h, (m, p, n) in g.iterrows() if n >= 3}
-    (WEB / "market.json").write_text(json.dumps({"stations": names, "subway": sub_out, "subway_obs": sub_obs, "routes": res,
+    write_atomic(WEB / "market.json", json.dumps({"stations": names, "subway": sub_out, "subway_obs": sub_obs, "routes": res,
                                                  "station_ll": {n: list(map(float, to_lonlat(*sxy[n])))[::-1] for n in names}},
                                                 separators=(",", ":")))
 
@@ -760,7 +802,7 @@ def signals(routes, trips, ext, n_days):
                     "hours": [round(h / 3600 / n_days, 3) for h in g["hours"]],
                     "approaches": g["approaches"][:8]})
     out.sort(key=lambda o: -o["veh_hours"])
-    (WEB / "signals.json").write_text(json.dumps({"signals": out, "n_signals": len(raw),
+    write_atomic(WEB / "signals.json", json.dumps({"signals": out, "n_signals": len(raw),
                                                   "queue_m": QUEUE_UP}, separators=(",", ":")))
     tot = sum(o["veh_hours"] for o in out)
     print(f"signals: {len(out)} of {len(raw)} signals hold transit; {tot:.0f} vehicle-hours/day; "

@@ -37,6 +37,6 @@ live:           # match every captured day, then analyze only those days
 all: gtfs signals avl match analyze
 
 serve:
-	$(PY) -m http.server 8765 -d web
+	$(PY) serve.py 8765
 
 .PHONY: signals capture-status capture-stop live setup gtfs avl avl-2021 match analyze all serve

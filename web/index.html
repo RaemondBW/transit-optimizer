@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Muni Time Lab</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=1790911945">
 </head>
 <body>
 <header>
@@ -40,7 +40,7 @@
       </div>
       <div class="side">
         <div id="fleet-headline" class="tiles"></div>
-        <h3>Worst sticking points <small>bus-hours lost per weekday vs free-flow</small></h3>
+        <h3>Worst sticking points <small>vehicle-hours lost per weekday vs free-flow, for the modes ticked above</small></h3>
         <ol id="hotspot-list" class="hot"></ol>
       </div>
     </div>
@@ -50,6 +50,7 @@
   <section id="tab-route" class="tab">
     <div class="controls">
       <label>Route <select id="route-select"></select></label>
+      <label>Direction <select id="route-dir"></select></label>
       <span class="legend" id="route-legend"></span>
     </div>
     <div id="route-tiles" class="tiles"></div>
@@ -117,6 +118,7 @@
   <section id="tab-stops" class="tab">
     <div class="controls">
       <label>Route <select id="stop-route"></select></label>
+      <label>Direction <select id="stop-dir"></select></label>
       <label>Target max spacing <input type="range" id="stop-target" min="300" max="1000" step="20" value="520"> <b id="stop-target-label"></b></label>
       <button id="stop-auto">Auto-consolidate</button>
       <button id="stop-reset" class="ghost">Reset</button>
@@ -168,6 +170,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=1790911945"></script>
 </body>
 </html>

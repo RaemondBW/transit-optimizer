@@ -323,8 +323,17 @@ def match_day(path: Path, net):
     # Vehicle timelines: raw pings plus which trip (if any) each belongs to.
     tmap = pd.Series(trips.trip.values, index=pd.MultiIndex.from_arrays([trips.vehicle_id, trips.t]))
     p["trip"] = tmap.reindex(pd.MultiIndex.from_arrays([p.vehicle_id, p.t])).fillna(0).astype(int).values
-    p[["vehicle_id", "vclass", "t", "x", "y", "average_speed", "trip"]].to_parquet(
-        PROC / f"vehicles_{day:%Y-%m-%d}.parquet")
+    cols = ["vehicle_id", "vclass", "t", "x", "y", "average_speed", "trip"]
+    if "route_id" in p and "direction_id" in p:
+        # Every ping that reports a route gets its distance along that route's shape,
+        # even outside a matched trip (terminal loops, partial trips), so map playback
+        # can follow the street. Only route-less movement stays a straight line.
+        key_index = {k: i for i, k in enumerate(keys)}
+        sidx = np.array([key_index.get((r, d), -1) for r, d in zip(p.route_id, p.direction_id)])
+        p["route_key"] = np.where(sidx >= 0, p.route_id + "_" + p.direction_id.astype(str), "")
+        p["route_along"] = [cand_by_ping.get(i, {}).get(s, np.nan) if s >= 0 else np.nan for i, s in zip(p.index, sidx)]
+        cols += ["route_key", "route_along"]
+    p[cols].to_parquet(PROC / f"vehicles_{day:%Y-%m-%d}.parquet")
     return trips
 
 
