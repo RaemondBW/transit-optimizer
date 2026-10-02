@@ -342,11 +342,27 @@ def main():
         {"routes": route_list, "days": days, "sample_day": SAMPLE_DAY, "bin": BIN, "source": source,
          "states": STATES}, separators=(",", ":")))
 
+    fleet_budget(trips, n_days)
     hotspots(hb, trips, routes, n_days)
     calibration(calib_rows, routes, contrib, ext, n_days)
     vehicles(routes)
     market(routes, trips, ext, n_days)
     signals(routes, trips, ext, n_days)
+
+
+def fleet_budget(trips, n_days):
+    """Citywide in-service time by mode and hour: [moving, crawl, at stop, stopped] vehicle-hours/day.
+
+    Drives the headline split (moving / at stops / stuck) and the timeline's
+    "share of fleet stuck each hour" bars, for whichever mode is selected.
+    """
+    out = {}
+    for mode, g in list(trips.groupby("mode")) + [("all", trips)]:
+        p = g.pivot_table(index="hour", columns="state", values="w", aggfunc="sum", fill_value=0).reindex(columns=range(4), fill_value=0)
+        out[mode] = {str(int(h)): [round(float(v) / 3600 / n_days, 2) for v in row] for h, row in p.iterrows() if 0 <= h <= 24}
+    write_atomic(WEB / "fleet_budget.json", json.dumps(out, separators=(",", ":")))
+    a = trips.groupby("state").w.sum()
+    print("fleet budget: " + ", ".join(f"{n} {a.get(i, 0) / a.sum():.0%}" for i, n in enumerate(["moving", "crawl", "stop", "stopped"])))
 
 
 def hotspots(hb, trips, routes, n_days):
@@ -537,13 +553,14 @@ def stale_repeat(vid, x, y, speed):
     return same & (speed > 2)
 
 
-def positions(p, min_gap=20, pad=180):
+def positions(p, min_gap=20, pad=1200):
     """Every vehicle's GPS track for the sample day, in hourly files for map playback.
 
     web/data/positions/<HH>.json = {"routes": [labels], "v": {vehicle: [mode, [[t, lat*1e5, lon*1e5, code, route_idx, along_m, mph], ...]]}}
     along_m is the distance along that route's shape (-1 when not on a trip).
     Pings are thinned to one per `min_gap` s; each file also holds `pad` s on
-    either side of its hour so the client can interpolate across the boundary.
+    either side of its hour so the client can interpolate (and bridge GPS dropouts
+    of up to 20 minutes) across the boundary.
     Parked/yard pings (code 6) are dropped.
     """
     p = p[p.c != 6].sort_values(["v", "t"])

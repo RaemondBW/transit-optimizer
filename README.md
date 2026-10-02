@@ -69,6 +69,21 @@ counts toward statistics. Tunnel sections are found from station names and porta
 stopped away from a bus stop or crawling under 5 mph. Near-side stop time is
 reported separately, and trains in tunnels are excluded.
 
+## Publishing on GitHub Pages
+
+The dashboard is static (HTML + JS + JSON), so it runs on GitHub Pages as-is; all
+paths are relative, so it works under a project subpath (`/transit-optimizer/`).
+
+```
+make deploy      # copies web/ + its data to the `gh-pages` branch (one commit, force-pushed)
+```
+The generated data (~65 MB) lives only on `gh-pages`, replaced on each deploy, so it
+never piles up in `main`'s history. One-time setup: *Settings → Pages → Deploy from a
+branch → `gh-pages` / root*. The site is then at `https://<user>.github.io/transit-optimizer/`.
+
+A Pages site is **public**, even if the repo is private, and Pages on a private repo
+needs a paid GitHub plan (Pro/Team/Enterprise).
+
 ## Known limitations
 
 - The 2026 data is a single composite weekday. Hour-by-100 m cells rest on a

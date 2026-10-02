@@ -36,7 +36,10 @@ live:           # match every captured day, then analyze only those days
 
 all: gtfs signals avl match analyze
 
+deploy:         # publish web/ + data to the gh-pages branch (GitHub Pages)
+	scripts/deploy_pages.sh
+
 serve:
 	$(PY) serve.py 8765
 
-.PHONY: signals capture-status capture-stop live setup gtfs avl avl-2021 match analyze all serve
+.PHONY: deploy signals capture-status capture-stop live setup gtfs avl avl-2021 match analyze all serve
