@@ -348,6 +348,7 @@ def main():
     vehicles(routes)
     market(routes, trips, ext, n_days)
     signals(routes, trips, ext, n_days)
+    trunk(routes, trips, n_days)
 
 
 def fleet_budget(trips, n_days):
@@ -727,6 +728,99 @@ def market(routes, trips, ext, n_days):
     write_atomic(WEB / "market.json", json.dumps({"stations": names, "subway": sub_out, "subway_obs": sub_obs, "routes": res,
                                                  "station_ll": {n: list(map(float, to_lonlat(*sxy[n])))[::-1] for n in names}},
                                                 separators=(",", ":")))
+
+
+TRUNK_STATIONS = ["Embarcadero", "Montgomery", "Powell", "Civic Center", "Van Ness", "Church", "Castro", "Forest Hill", "West Portal"]
+TRUNK_LINES = ["J", "K", "L", "M", "N"]   # the T uses the Central Subway, not Market St
+APPROACH = 400                             # m of surface track before a portal, where merges queue
+
+
+def trunk(routes, trips, n_days):
+    """Inputs for "one train line in the Market St subway, everything else transfers".
+
+    For each Metro line (inbound), from the GPS traces:
+      - merge delay: time from 400 m before its tunnel portal to the portal, vs the
+        free-flow time (10th percentile) on that stretch
+      - today's ride from that point to each downtown station (median / 90th pct)
+    Pooled across lines: station-to-station subway ride times, and how bunched
+    trains are at Van Ness (expected wait vs. the average gap).
+    """
+    ug = underground_ranges(routes)
+    lines, pooled, passings = [], {}, []
+    for line in TRUNK_LINES:
+        key_ = (line, 1)
+        if key_ not in routes or key_ not in ug:
+            continue
+        r = routes[key_]
+        entry = ug[key_][0]
+        st_d = {}
+        for name in TRUNK_STATIONS:
+            m = [s["d"] for s in r["stops"] if name in s["name"] and s["name"].startswith(UNDERGROUND_STATIONS)]
+            if m:
+                st_d[name] = m[0]
+        order = sorted(st_d, key=st_d.get)                  # stations in travel order
+        transfer = next((n for n in order if st_d[n] >= entry - 50), None)
+        P = max(entry - APPROACH, 0)
+        mine = trips[(trips.route_id == line) & (trips.direction_id == 1)]
+        rows = []
+        for tid, g in mine.groupby("trip"):
+            a, t = g.along.values, g.t.values
+            if a.min() > P or a.max() < entry:
+                continue
+            tP, tE = np.interp([P, entry], a, t)
+            rec = {"hour": int(tP // 3600), "approach": tE - tP}
+            for n in order:
+                if a.max() >= st_d[n] >= entry - 50:
+                    rec[n] = float(np.interp(st_d[n], a, t)) - tP
+            rows.append(rec)
+            if "Van Ness" in st_d and a.min() <= st_d["Van Ness"] <= a.max():
+                passings.append(float(np.interp(st_d["Van Ness"], a, t)))
+        if not rows:
+            continue
+        df = pd.DataFrame(rows)
+        ff = float(df.approach.quantile(0.10))
+        stat = lambda col: {str(h): [round(g[col].median() / 60, 2), round(g[col].quantile(0.9) / 60, 2), int(g[col].count())]
+                            for h, g in df.groupby("hour") if g[col].count() >= 2}
+        to_station = {n: stat(n) for n in order if n in df}
+        # pooled subway ride between stations (any line that runs both)
+        for i, x in enumerate(order):
+            for y in order[i + 1:]:
+                if x in df and y in df:
+                    d = df[["hour", x, y]].dropna()
+                    pooled.setdefault(f"{x}|{y}", []).extend(zip(d.hour, d[y] - d[x]))
+        lat, lon = to_lonlat(r["x"][min(int(entry // 10), len(r["x"]) - 1)], r["y"][min(int(entry // 10), len(r["y"]) - 1)])
+        lines.append({"route": line, "key": key(line, 1), "headsign_out": routes.get((line, 0), {}).get("headsign", ""),
+                      "portal": "West Portal" if transfer == "West Portal" else "Duboce", "transfer": transfer,
+                      "entry_d": round(entry), "approach_m": APPROACH, "station_d": {n: round(v) for n, v in st_d.items()},
+                      "free_flow_min": round(ff / 60, 2), "approach_min": stat("approach"), "to_station": to_station,
+                      "trips_per_hour": r["trips_per_hour"], "portal_ll": [round(float(lat), 6), round(float(lon), 6)]})
+        print(f"trunk: {line} enters at {lines[-1]['portal']} (transfer {transfer}); approach free-flow {ff/60:.1f} min, "
+              f"median {df.approach.median()/60:.1f} min over {len(df)} trips")
+    pairs = {}
+    for pair, v in pooled.items():
+        d = pd.DataFrame(v, columns=["hour", "sec"])
+        pairs[pair] = {str(h): [round(g.sec.median() / 60, 2), round(g.sec.quantile(0.9) / 60, 2), int(len(g))]
+                       for h, g in d.groupby("hour") if len(g) >= 3}
+    # bunching at Van Ness (inbound): expected wait = E[h^2] / 2E[h] for a rider arriving at random
+    p = np.sort(np.array(passings))
+    h = np.diff(p)
+    vn = {}
+    for hr in range(5, 24):
+        sel = h[(p[:-1] >= hr * 3600) & (p[:-1] < (hr + 1) * 3600) & (h < 1800)]
+        if len(sel) >= 3:
+            vn[str(hr)] = [int(len(sel) / n_days), round(float(sel.mean()) / 60, 2), round(float((sel ** 2).mean() / (2 * sel.mean())) / 60, 2)]
+    # station coordinates for the map (from any line that serves them)
+    st_ll = {}
+    for line in TRUNK_LINES:
+        for s in routes.get((line, 1), {}).get("stops", []):
+            for n in TRUNK_STATIONS:
+                if n not in st_ll and n in s["name"] and s["name"].startswith(UNDERGROUND_STATIONS):
+                    r = routes[(line, 1)]; k = min(int(s["d"] // 10), len(r["x"]) - 1)
+                    lo, la = to_lonlat(r["x"][k], r["y"][k]); st_ll[n] = [round(float(la), 6), round(float(lo), 6)]
+    write_atomic(WEB / "trunk.json", json.dumps({"stations": TRUNK_STATIONS, "station_ll": st_ll, "lines": lines,
+                                                 "pairs": pairs, "van_ness": vn}, separators=(",", ":")))
+    if "8" in vn:
+        print(f"trunk: Van Ness inbound at 8am: {vn['8'][0]} trains/h, avg gap {vn['8'][1]} min, expected wait {vn['8'][2]} min")
 
 
 SIGNAL_TYPES = {"SIGNAL", "SIGNAL (CONTRACTOR MAINTAINED)", "CALTRANS", "CALTRANS (BY CONTRACTOR CONSORTIUM GLC)",

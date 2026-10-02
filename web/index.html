@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
-<link rel="stylesheet" href="style.css?v=1790919330">
+<link rel="stylesheet" href="style.css?v=1790965173">
 </head>
 <body>
 <div id="app">
@@ -35,12 +35,12 @@
     <div class="lr"><span>under 6 mph</span><span>20+</span></div>
     <div class="lt" style="margin-top:4px">Vehicles</div>
     <div class="lg">
-      <span><i style="background:var(--s-moving)"></i>Moving</span>
-      <span><i style="background:var(--s-stopped)"></i>Stuck</span>
-      <span><i style="background:var(--s-dwell)"></i>At stop</span>
-      <span><i style="background:var(--s-crawl)"></i>Crawling</span>
+      <span><i style="background:#2fa84f"></i>Moving</span>
+      <span><i style="background:#d9412b"></i>Stuck</span>
+      <span><i style="background:#d9dad5"></i>At a stop</span>
+      <span><i style="background:#e3a21a"></i>Crawling</span>
     </div>
-    <div class="muted">Longer icons are trains · hover a vehicle for its speed, click to pin</div>
+    <div class="muted">Number on the roof = line, outline = line color · 🚦 held at a light · boarding badge at a stop · hover for speed, click to pin</div>
   </div>
 
   <!-- content panel: desktop side panel / mobile bottom sheet -->
@@ -187,9 +187,33 @@
 
   <!-- MARKET -->
   <section id="tab-market" class="tab">
-    <p class="lede">Several routes run the length of Market St on the surface, directly above the Muni Metro subway. What if they ended at a subway station and riders transferred down to the trains for the downtown leg? The buses saved could run more often on the rest of each route.</p>
+    <h2 class="pg-title">Market St trunk</h2>
+    <p class="lede">Under Market St, five Metro lines (J, K, L, M, N) share one subway. Every train has to merge in at a portal, and a delay on any branch spills into the tunnel for everyone.
+      What if <b>one line ran in the subway</b>, as a frequent, evenly spaced shuttle between Embarcadero and West Portal, and the other lines ended at the subway, where riders transfer underground?
+      The same idea works for buses that drive the length of Market St above it.</p>
     <div class="controls">
       <label>Hour <input type="range" id="mk-hour" min="6" max="22" value="8"> <b id="mk-hour-label"></b></label>
+    </div>
+
+    <h3 class="sec">Metro: one line in the subway</h3>
+    <div class="controls">
+      <label title="Trains per hour on the trunk. Blank = same as the subway carries today at that hour">Trunk trains/hour <input type="number" id="tk-tph" placeholder="as today" min="6" max="40" step="1" style="width:84px"></label>
+      <label title="Walking between the branch platform and the trunk platform (cross-platform at West Portal, underground at Van Ness)">Transfer walk <input type="number" id="tk-walk" value="1.5" min="0" max="10" step="0.5"> min</label>
+      <label title="How uneven the trunk's spacing is (coefficient of variation of the gaps). 0 = perfectly even; one line on its own track can run close to even">Trunk regularity <input type="number" id="tk-cv" value="0.25" min="0" max="1.5" step="0.05"> CV</label>
+      <label title="Time for a trunk train to reverse at each end">Turnback <input type="number" id="tk-turn" value="3" min="0" max="10" step="0.5"> min</label>
+    </div>
+    <div id="tk-tiles" class="tiles"></div>
+    <div class="split">
+      <div id="tk-map" class="map"></div>
+      <div class="side">
+        <div id="tk-table"></div>
+        <div id="tk-notes" class="note"></div>
+      </div>
+    </div>
+
+    <h3 class="sec">Buses: end at a subway station</h3>
+    <p class="lede">Several bus routes also run the length of Market St, directly above the subway. If they ended at a station and riders transferred down to the trains, the buses saved could run more often on the rest of each route.</p>
+    <div class="controls">
       <label title="Walking from the bus stop to the platform, including stairs and fare gates">Transfer walk <input type="number" id="mk-walk" value="3" min="0" max="10" step="0.5"> min</label>
       <label title="Extra perceived cost of transferring, used by planners (0 = count only real minutes)">Transfer penalty <input type="number" id="mk-penalty" value="0" min="0" max="15" step="1"> min</label>
       <label title="Time for a truncated bus to turn around at the new terminal">Turnaround <input type="number" id="mk-turn" value="4" min="0" max="15" step="1"> min</label>
@@ -218,6 +242,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
-<script src="app.js?v=1790919558"></script>
+<script src="app.js?v=1790965377"></script>
 </body>
 </html>

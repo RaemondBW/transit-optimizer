@@ -390,3 +390,15 @@ optgroup { font-style: normal; font-weight: 600; }
 #c-sel .sel-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 #c-sel .sel-back { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; flex: none; }
 #c-sel .hot-row { margin: 6px 0 0; border-bottom: 0; background: var(--grid); }
+
+/* pages without the city map (signals, vehicles, stops, market, method): solid page, map hidden */
+#app.page-mode #map { visibility: hidden; }
+#app.page-mode .page { left: 0; right: 0; bottom: 0; border-radius: 0; border: 0; box-shadow: none;
+  background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
+#app.page-mode .page > .tab { max-width: 1400px; margin: 0 auto; }
+@media (min-width: 1100px) { #app.page-mode .page { top: 76px; padding: 12px 32px 32px; } }
+@media (max-width: 1099px) { #app.page-mode .page { top: calc(env(safe-area-inset-top) + 72px); bottom: calc(64px + env(safe-area-inset-bottom)); } }
+
+.pg-title { font-size: 26px; letter-spacing: -.02em; margin: 6px 0 6px; }
+h3.sec { font-size: 18px; margin: 28px 0 8px; padding-top: 18px; border-top: 1px solid var(--border); }
+#tk-table td:nth-child(2), #tk-table th:nth-child(2) { text-align: left; }

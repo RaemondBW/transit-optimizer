@@ -170,48 +170,61 @@ class GLMap {
 }
 const makeMap = (id, opts) => new GLMap(id, opts);
 
-// Top-down vehicle icons, nose pointing up (north), one per mode x activity color.
-// Drawn at 2x for crisp edges; the map rotates them to the direction of travel.
-const VEHICLE_SHAPES = { bus: [12, 26], rail: [12, 40], streetcar: [12, 30], cable: [12, 20] };
-function vehicleIcon(mode, fill, outline) {
-  const [w, h] = VEHICLE_SHAPES[mode] || VEHICLE_SHAPES.bus, k = 2, pad = 3;
+// ---------- vehicle icons ----------
+// Muni-style top-down vehicles, nose up (north): body colored by what it's doing,
+// the line number painted on the roof, and the route's color as the outline.
+// Images are drawn on demand (MapLibre "styleimagemissing") for each combination
+// of shape / status / line / route color / text direction the map actually needs.
+const VEHICLE_SHAPES = { bus: [16, 36], rail: [16, 52], streetcar: [16, 40], cable: [15, 26] };
+const HALF = [16, 26];   // one half of an articulated light-rail car
+const MUNI_SILVER = "#d9dad5";
+// body color per status code: 0 moving, 1 crawling, 2 at a stop, 3 stuck/at a light, 4 layover, 5 out of service
+const VEH_BODY = ["#2fa84f", "#e3a21a", MUNI_SILVER, "#d9412b", "#b9b9b3", "#8f8f89"];
+const vehColor = (code) => VEH_BODY[code] ?? MUNI_SILVER;
+const VEH_LABEL = ["Moving", "Crawling in traffic", "At a stop", "Stuck (traffic or light)", "Laying over", "Out of service"];
+
+function drawVehicle(shape, code, text, outline, flip) {
+  const [w, h] = shape === "railfront" || shape === "railrear" ? HALF : (VEHICLE_SHAPES[shape] || VEHICLE_SHAPES.bus);
+  const k = 2, pad = 3;
   const c = document.createElement("canvas");
   c.width = (w + pad * 2) * k; c.height = (h + pad * 2) * k;
   const g = c.getContext("2d");
   g.scale(k, k); g.translate(pad, pad);
   const rr = (x, y, ww, hh, r) => { g.beginPath(); g.roundRect(x, y, ww, hh, r); };
-  rr(0, 0, w, h, [5, 5, 3, 3]); g.fillStyle = fill; g.fill();
-  g.lineWidth = 1.6; g.strokeStyle = outline; g.stroke();
-  g.fillStyle = "rgba(255,255,255,0.85)";               // windshield at the front
-  rr(2, 2.5, w - 4, 4, 1.5); g.fill();
-  g.fillStyle = "rgba(255,255,255,0.35)";               // side windows
-  for (let y = 9; y < h - 4; y += 5) { rr(1.6, y, 1.8, 3, 0.8); g.fill(); rr(w - 3.4, y, 1.8, 3, 0.8); g.fill(); }
-  if (mode === "rail") { g.fillStyle = outline; g.fillRect(0, h / 2 - 0.6, w, 1.2); } // two-car joint
-  return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
-}
-// One half of an articulated light-rail car: "front" has the nose and windshield,
-// "rear" the tail; each joins the other at a bellows so a train can bend in the middle.
-const HALF = [12, 20];
-function trainHalfIcon(part, fill, outline) {
-  const [w, h] = HALF, k = 2, pad = 3;
-  const c = document.createElement("canvas");
-  c.width = (w + pad * 2) * k; c.height = (h + pad * 2) * k;
-  const g = c.getContext("2d");
-  g.scale(k, k); g.translate(pad, pad);
-  const front = part === "front";
-  g.beginPath(); g.roundRect(0, 0, w, h, front ? [5, 5, 1, 1] : [1, 1, 4, 4]);
-  g.fillStyle = fill; g.fill(); g.lineWidth = 1.6; g.strokeStyle = outline; g.stroke();
-  g.fillStyle = "rgba(255,255,255,0.85)";
-  if (front) { g.beginPath(); g.roundRect(2, 2.5, w - 4, 4, 1.5); g.fill(); }
-  g.fillStyle = "rgba(255,255,255,0.35)";
-  for (let y = front ? 9 : 3; y < h - 3; y += 5) {
-    g.beginPath(); g.roundRect(1.6, y, 1.8, 3, 0.8); g.fill();
-    g.beginPath(); g.roundRect(w - 3.4, y, 1.8, 3, 0.8); g.fill();
+  const front = shape !== "railrear", rear = shape !== "railfront";
+  const body = vehColor(code), light = code === 2 || code === 4 || code === 5;
+  // body + route-colored outline
+  rr(0, 0, w, h, [front ? 5 : 1.5, front ? 5 : 1.5, rear ? 3.5 : 1.5, rear ? 3.5 : 1.5]);
+  g.fillStyle = body; g.fill();
+  g.lineWidth = 2.4; g.strokeStyle = outline; g.stroke();
+  // windshield at the nose, rear window at the tail
+  g.fillStyle = "rgba(20,24,28,.82)";
+  if (front) { rr(2.2, 2.4, w - 4.4, 4.2, 1.6); g.fill(); }
+  if (rear) { rr(3.5, h - 3.6, w - 7, 1.8, 0.8); g.fill(); }
+  // side window strips (a hint of the Muni livery)
+  g.fillStyle = light ? "rgba(40,44,48,.28)" : "rgba(255,255,255,.28)";
+  g.fillRect(1.3, front ? 8 : 2, 1.6, h - (front ? 11 : 4)); g.fillRect(w - 2.9, front ? 8 : 2, 1.6, h - (front ? 11 : 4));
+  if (!light && front) { g.fillStyle = "#c8102e"; g.fillRect(1.3, front ? 7.2 : 0, w - 2.6, 1); }  // Muni red band behind the cab
+  if (shape === "railfront") { g.fillStyle = outline; g.fillRect(1, h - 1.6, w - 2, 1.6); }
+  if (shape === "railrear") { g.fillStyle = outline; g.fillRect(1, 0, w - 2, 1.6); }
+  // line number on the roof, running along the body; flipped so it never reads upside down
+  if (text) {
+    g.save();
+    const cy = front && rear ? h / 2 + 2 : front ? h / 2 + 3 : h / 2;
+    g.translate(w / 2, cy);
+    g.rotate(flip ? Math.PI / 2 : -Math.PI / 2);
+    const size = text.length >= 3 ? 8.2 : 9.6;
+    g.font = `700 ${size}px "Instrument Sans", system-ui, sans-serif`;
+    g.textAlign = "center"; g.textBaseline = "middle";
+    g.lineWidth = 2.2; g.strokeStyle = light ? "rgba(255,255,255,.9)" : "rgba(0,0,0,.35)";
+    g.strokeText(text, 0, 0.5);
+    g.fillStyle = light ? "#111" : "#fff";
+    g.fillText(text, 0, 0.5);
+    g.restore();
   }
-  g.fillStyle = outline;                                   // bellows at the joint
-  if (front) g.fillRect(1, h - 1.6, w - 2, 1.6); else g.fillRect(1, 0, w - 2, 1.6);
   return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
 }
+const vehIconName = (shape, code, text, outline, flip) => `v|${shape}|${code}|${text || ""}|${outline}|${flip ? 1 : 0}`;
 // small upright traffic light with the red lamp lit
 function trafficLightIcon() {
   const w = 10, h = 24, k = 2, pad = 4;
@@ -225,19 +238,34 @@ function trafficLightIcon() {
   lamp(5, "#ff3b30", true); lamp(12, "#4a3f1c", false); lamp(19, "#1f3b2a", false);
   return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
 }
+// passengers boarding: two little people stepping in, in a light badge
+function paxIcon() {
+  const w = 20, h = 16, k = 2, pad = 2;
+  const c = document.createElement("canvas");
+  c.width = (w + pad * 2) * k; c.height = (h + pad * 2) * k;
+  const g = c.getContext("2d");
+  g.scale(k, k); g.translate(pad, pad);
+  g.beginPath(); g.roundRect(0, 0, w, h, 5);
+  g.fillStyle = "#fcfcfb"; g.fill(); g.lineWidth = 1.2; g.strokeStyle = "#1baf7a"; g.stroke();
+  const person = (x, s) => {
+    g.fillStyle = "#127a55";
+    g.beginPath(); g.arc(x, 4.2 * s + 0.6, 2 * s, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.roundRect(x - 2.4 * s, 7 * s, 4.8 * s, 6.2 * s, 2 * s); g.fill();
+  };
+  person(6.5, 1); person(12.5, 0.92);
+  g.strokeStyle = "#127a55"; g.lineWidth = 1.4; g.beginPath(); g.moveTo(15.6, 8); g.lineTo(18.4, 8); g.moveTo(17.2, 6.6); g.lineTo(18.6, 8); g.lineTo(17.2, 9.4); g.stroke();
+  return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
+}
 GLMap.prototype.ensureVehicleIcons = function () {
   if (this._icons) return;
   this._icons = true;
-  for (const mode of Object.keys(VEHICLE_SHAPES)) {
-    STATE.slice(0, 6).forEach((_, code) => {
-      const outline = mode === "bus" ? css("--surface") : css("--text");
-      this.map.addImage(`veh-${mode}-${code}`, vehicleIcon(mode, stColor(code), outline), { pixelRatio: 2 });
-    });
-  }
   this.map.addImage("tlight", trafficLightIcon(), { pixelRatio: 2 });
-  STATE.slice(0, 6).forEach((_, code) => {
-    for (const part of ["front", "rear"])
-      this.map.addImage(`veh-rail${part}-${code}`, trainHalfIcon(part, stColor(code), css("--text")), { pixelRatio: 2 });
+  this.map.addImage("pax", paxIcon(), { pixelRatio: 2 });
+  // draw any vehicle icon the first time the map asks for it
+  this.map.on("styleimagemissing", (e) => {
+    if (!e.id.startsWith("v|") || this.map.hasImage(e.id)) return;
+    const [, shape, code, text, outline, flip] = e.id.split("|");
+    this.map.addImage(e.id, drawVehicle(shape, +code, text, outline, flip === "1"), { pixelRatio: 2 });
   });
 };
 // Icon scale used by the symbol layer at a given MapLibre zoom (keep in sync with icon-size).
@@ -499,7 +527,7 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
     ui.shown = ui.shown == null ? target : ui.shown + (target - ui.shown) * 0.25;   // ease the needle
     const mph = ui.shown, frac = Math.min(mph / ui.max, 1);
     const st = describe(p, mph);
-    const color = stColor(st.key);
+    const color = vehColor(st.key === 1 ? 1 : st.key);
     ui.value.setAttribute("d", arcPath(frac));
     ui.value.style.stroke = color;
     const [nx, ny] = arcPt(frac);
@@ -539,10 +567,20 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
           if (ahead.along != null && p.along != null && ahead.label === p.label && Math.abs(ahead.along - p.along) > 1)
             heading.set(`${vid}:dir`, ahead.along > p.along ? 1 : -1);
         }
-        const code = Math.min((p.f < 0.5 ? p.a : p.b)[3], 5);
+        let code = Math.min((p.f < 0.5 ? p.a : p.b)[3], 5);
+        if (p.shape && p.along != null && code !== 0) {   // match the card: at a stop / at a light / in traffic
+          const mphNow = Math.max(0, p.a[6] + p.f * (p.b[6] - p.a[6]));
+          const k = describe(p, mphNow).key;
+          code = k === 0 ? 0 : k === 2 ? 2 : k === 3 ? 3 : code === 4 ? 4 : 1;
+        }
         const route = p.shape ? `${p.shape.route} → ${p.shape.headsign}` : "not on a trip";
         const common = { key: vid, tip: `${VEHICLE_NAME[mode] || mode} ${vid} · ${route}<br>${STATE[code].label} · click for details`,
           onClick: () => select(vid, mode) };
+        // on a route, face along the track (also right for stopped vehicles, whose GPS heading goes stale)
+        if (p.shape && p.along != null) rot = bearingOf(pointAt(p.shape, p.along - 6), pointAt(p.shape, p.along + 6));
+        const text = p.shape ? p.shape.route : "";
+        const outline = p.shape ? p.shape.color : (dark() ? "#3a3a37" : "#9a9a94");
+        const flipFor = (r) => ((r % 360) + 360) % 360 > 180;   // keep the roof number readable
         if (mode === "rail" && p.shape && p.along != null) {
           // Articulated train: each half sits on the track at its own spot and turns
           // with its own piece of curve, so the train bends at the middle joint.
@@ -552,19 +590,21 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
             const c = Math.min(Math.max(p.along + dir * off, 0), p.shape.length);
             const at = pointAt(p.shape, c);
             const r = bearingOf(pointAt(p.shape, c - dir * 4), pointAt(p.shape, c + dir * 4));
-            feats.push({ ...common, lat: at[0], lon: at[1], rot: r, icon: `veh-rail${part}-${code}` });
+            feats.push({ ...common, lat: at[0], lon: at[1], rot: r, icon: vehIconName(`rail${part}`, code, text, outline, flipFor(r)) });
           }
         } else {
-          feats.push({ ...common, lat: p.lat, lon: p.lon, rot, icon: `veh-${VEHICLE_SHAPES[mode] ? mode : "bus"}-${code}` });
+          feats.push({ ...common, lat: p.lat, lon: p.lon, rot, icon: vehIconName(VEHICLE_SHAPES[mode] ? mode : "bus", code, text, outline, flipFor(rot)) });
         }
         if (sel && sel.vid === vid) selPos = p;
-        // held at a red light: a small signal just past the vehicle's nose (as in the design)
+        // just past the vehicle's nose: a red light when it's held at a signal,
+        // passengers boarding when it's at a stop
         if (p.shape && p.along != null) {
           const mphNow = Math.max(0, p.a[6] + p.f * (p.b[6] - p.a[6]));
-          if (mphNow < 5 && describe(p, mphNow).key === 3) {
+          const k = mphNow < 5 ? describe(p, mphNow).key : 0;
+          if (k === 3 || k === 2) {
             const len = mode === "rail" ? HALF[1] * 2 : (VEHICLE_SHAPES[mode] || VEHICLE_SHAPES.bus)[1];
             const at = pointAt(p.shape, Math.min(p.along + (len / 2 + 12) * scale * mpp, p.shape.length));
-            feats.push({ key: vid, lat: at[0], lon: at[1], rot: 0, icon: "tlight", onClick: common.onClick });
+            feats.push({ key: vid, lat: at[0], lon: at[1], rot: 0, icon: k === 3 ? "tlight" : "pax", onClick: common.onClick });
           }
         }
       }
@@ -1179,7 +1219,86 @@ function renderStops() {
 // MARKET ST TAB
 // =====================================================================
 const mk = { on: new Set(), station: {} };
+// ---------- Metro trunk: one line in the Market St subway ----------
+const tk = {};
+async function initTrunk() {
+  DATA.trunk = DATA.trunk || await getJSON("data/trunk.json").catch(() => null);
+  if (!DATA.trunk) { $("#tk-tiles").innerHTML = `<p class="muted">Run the pipeline to produce data/trunk.json.</p>`; return; }
+  tk.map = makeMap("tk-map", { center: [37.772, -122.44], zoom: 12.6 });
+  tk.map.lines("branch", []); tk.map.lines("trunk", []); tk.map.points("stations", []);
+  ["#tk-tph", "#tk-walk", "#tk-cv", "#tk-turn"].forEach((q) => $(q).addEventListener("input", renderTrunk));
+  renderTrunk();
+}
+function renderTrunk() {
+  const T = DATA.trunk; if (!T) return;
+  const hour = +$("#mk-hour").value, walk = +$("#tk-walk").value, cv = +$("#tk-cv").value, turn = +$("#tk-turn").value;
+  const near = (obj, h) => obj?.[h] ?? obj?.[h + 1] ?? obj?.[h - 1];
+  const vn = near(T.van_ness, hour) || [0, 0, 0];
+  const todayTph = vn[0];
+  const tph = +$("#tk-tph").value || todayTph;
+  const headway = 60 / tph;
+  const trunkWait = (headway / 2) * (1 + cv * cv);
+  const pair = (a, b, h) => near(T.pairs[`${a}|${b}`], h);
+  // per-line rider comparison to Montgomery (downtown)
+  const dest = "Montgomery";
+  const rows = T.lines.map((l) => {
+    const app = near(l.approach_min, hour), today = near(l.to_station[dest], hour);
+    if (!app || !today) return null;
+    const merge = Math.max(app[0] - l.free_flow_min, 0);
+    // portal -> transfer station (N/J still run through the Duboce tunnel to Van Ness)
+    const toTr = near(l.to_station[l.transfer], hour);
+    const legTr = toTr ? Math.max(toTr[0] - app[0], 0) : 0, legTr90 = toTr ? Math.max(toTr[1] - app[1], 0) : 0;
+    const ride = pair(l.transfer, dest, hour);
+    if (!ride) return null;
+    const med = l.free_flow_min + legTr + walk + trunkWait + ride[0];
+    const bad = l.free_flow_min + legTr90 + walk + headway + ride[1];
+    return { l, merge, today, med, bad, dMed: med - today[0], dBad: bad - today[1] };
+  }).filter(Boolean);
+  // operator side over the whole day
+  let mergeH = 0, freedH = 0, trunkH = 0;
+  for (let h = 5; h < 24; h++) {
+    for (const l of T.lines) {
+      const n = l.trips_per_hour[h] || 0, app = near(l.approach_min, h), tr = pair(l.transfer, "Embarcadero", h);
+      if (app) mergeH += (n * Math.max(app[0] - l.free_flow_min, 0)) / 60;
+      if (tr) freedH += (n * 2 * tr[0]) / 60;                    // branch trains no longer run the subway, both ways
+    }
+    const v = T.van_ness[h], full = pair("West Portal", "Embarcadero", h);
+    if (v && full) trunkH += (((+$("#tk-tph").value || v[0]) * (2 * full[0] + 2 * turn)) / 60);
+  }
+  const fmt = (x) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(1)} min`;
+  $("#tk-tiles").innerHTML = [
+    ["Subway trains/hour", `${todayTph} → ${Math.round(tph)}`, `inbound at Van Ness, ${fmtH(hour)} · today 5 lines, then one`],
+    ["Wait for a train in the subway", `${vn[2].toFixed(1)} → ${trunkWait.toFixed(1)} min`, `today's gaps average ${vn[1].toFixed(1)} min but bunch; an even trunk shrinks the wait`],
+    ["Queueing at portals removed", `${mergeH.toFixed(0)} h/day`, "train-hours merging at West Portal & Duboce"],
+    ["Train-hours per weekday", `${freedH - trunkH >= 0 ? "−" : "+"}${Math.abs(freedH - trunkH).toFixed(0)}`, `branches stop running the subway (${freedH.toFixed(0)} h) vs the trunk itself (${trunkH.toFixed(0)} h)`],
+  ].map(([l, v, d]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
+  $("#tk-table").innerHTML = `<table><thead><tr><th>Line</th><th>Transfer at</th><th>Merge delay today</th><th>To ${dest} today</th><th>With trunk</th><th>Typical day</th><th>Bad day</th></tr></thead><tbody>
+    ${rows.map((x) => `<tr><td><span class="rb" style="background:${routeByKeyFast(x.l.key)?.color || "#666"}">${x.l.route}</span></td><td>${x.l.transfer}</td>
+      <td>${x.merge.toFixed(1)} min</td><td>${x.today[0].toFixed(1)} <span class="muted">/ ${x.today[1].toFixed(1)}</span></td>
+      <td>${x.med.toFixed(1)} <span class="muted">/ ${x.bad.toFixed(1)}</span></td>
+      <td class="${x.dMed <= 0 ? "pos" : "neg"}"><b>${fmt(x.dMed)}</b></td><td class="${x.dBad <= 0 ? "pos" : "neg"}"><b>${fmt(x.dBad)}</b></td></tr>`).join("")}
+    </tbody></table>`;
+  $("#tk-notes").innerHTML = `<b>How to read this.</b> A rider starting ${T.lines[0]?.approach_m || 400} m before their line's tunnel portal, headed to ${dest}, at ${fmtH(hour)}.
+    <i>Today</i>: ride straight through, including the queue to merge at the portal (median / 90th percentile, measured).
+    <i>With trunk</i>: ride the branch at free-flow speed to the transfer station (no merge queue), walk ${walk} min to the trunk platform, wait for a trunk train (half its headway, adjusted for regularity; a full headway on a bad day), then the measured subway ride.
+    Not modeled: whether one line's trains can carry everyone (longer trains or more frequent service would be needed at peak), new turnback tracks at West Portal and Van Ness, and the comfort cost of transferring.`;
+  // map: trunk + branches ending at their transfer stations
+  const trunkLine = routeByKeyFast("K_1"), wp = DATA.trunk.lines.find((l) => l.route === "K");
+  tk.map.lines("trunk", trunkLine && wp ? [{ coords: trunkLine.line.filter((p) => p[2] >= wp.station_d["West Portal"] - 5 && p[2] <= wp.station_d.Embarcadero + 5),
+    color: css("--accent"), width: 7, opacity: 0.95, tip: `<b>Trunk</b>: Embarcadero ↔ West Portal, ${Math.round(tph)} trains/h` }] : []);
+  tk.map.lines("branch", T.lines.map((l) => {
+    const r = routeByKeyFast(l.key), end = l.station_d[l.transfer] ?? l.entry_d;
+    return r ? { coords: r.line.filter((p) => p[2] <= end), color: r.color, width: 3.5, opacity: 0.9, tip: `<b>${l.route}</b> ends at ${l.transfer}; riders transfer to the trunk` } : null;
+  }).filter(Boolean));
+  const transfers = new Set(T.lines.map((l) => l.transfer));
+  tk.map.points("stations", Object.entries(T.station_ll).map(([n, ll]) => ({ lat: ll[0], lon: ll[1], radius: transfers.has(n) ? 7 : 4.5,
+    fill: css("--surface"), stroke: transfers.has(n) ? css("--accent") : css("--text"), strokeWidth: transfers.has(n) ? 3 : 1.5,
+    tip: `${n}${transfers.has(n) ? " · transfer station" : ""}` })));
+}
+
 function initMarket() {
+  initTrunk();
+  $("#mk-hour").addEventListener("input", renderTrunk);
   mk.map = makeMap("mk-map", { center: [37.781, -122.415], zoom: 14 });
   mk.map.lines("kept", []); mk.map.lines("cut", [], { dash: [2, 2] }); mk.map.points("stations", []);
   const M = DATA.market;
@@ -1436,6 +1555,7 @@ function showTab(k) {
   drawTabs();
   const onMap = k === "city" || k === "route";
   $("#page").hidden = onMap;
+  document.getElementById("app").classList.toggle("page-mode", !onMap);   // non-map pages: solid background, no map
   $("#panel").hidden = !onMap;
   $("#chips").hidden = k !== "city";   // Routes: you pick the route, no mode filter
   $$(".legend, .timeline").forEach((el) => (el.style.visibility = onMap ? "" : "hidden"));
@@ -1444,7 +1564,7 @@ function showTab(k) {
   if (!onMap) {
     $$("#page .tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${k}`));
     if (!legacyInited[k]) { legacyInited[k] = true; LEGACY[k](); }
-    [sc.map, mk.map, sg.map].forEach((m) => m && m.resize());
+    [sc.map, mk.map, sg.map, tk.map].forEach((m) => m && m.resize());
     return;
   }
   drawSpeed(); drawHotspots();
