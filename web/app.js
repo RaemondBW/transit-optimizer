@@ -271,27 +271,74 @@ GLMap.prototype.ensureVehicleIcons = function () {
 // Icon scale used by the symbol layer at a given MapLibre zoom (keep in sync with icon-size).
 const iconScale = (z) => (z <= 10 ? 0.45 : z <= 13 ? 0.45 + ((z - 10) / 3) * 0.3 : z <= 16 ? 0.75 + ((z - 13) / 3) * 0.5 : 1.25);
 // features: [{ lat, lon, icon, rot, tip, onClick }]
+// Vehicles are drawn on a 2D canvas laid over the map, every frame, instead of
+// through a MapLibre GeoJSON source: re-uploading ~700 moving icons each frame
+// made MapLibre re-lay-out the symbol layer in its worker, which couldn't keep up
+// (vehicles visibly jumped about once a second during playback).
+// features: [{ lat, lon, icon, rot, key, tip, onClick }] or { ring: true, lat, lon }
+const ICON_CACHE = new Map();
+function iconCanvas(name) {
+  let c = ICON_CACHE.get(name);
+  if (c) return c;
+  let img;
+  if (name === "tlight") img = trafficLightIcon();
+  else if (name === "pax") img = paxIcon();
+  else { const [, shape, code, text, outline, flip] = name.split("|"); img = drawVehicle(shape, +code, text, outline, flip === "1"); }
+  c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  c.getContext("2d").putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
+  ICON_CACHE.set(name, c);
+  return c;
+}
 GLMap.prototype.symbols = function (name, features, opts = {}) {
   if (!this.loaded) { this.ready.then(() => this.symbols(name, features, opts)); return; }
-  this.ensureVehicleIcons();
   let set = this.sets[name];
   if (!set) {
-    const m = this.map, id = `set-${name}`;
-    m.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    m.addLayer({ id, type: "symbol", source: id, layout: {
-      "icon-image": ["get", "icon"], "icon-rotate": ["get", "rot"], "icon-rotation-alignment": "map",
-      "icon-allow-overlap": true, "icon-ignore-placement": true,
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.45, 13, 0.75, 16, 1.25] } });
-    set = { id, handlers: new Map(), hover: true };
-    // Icons are small and move during playback: pick the nearest one within
-    // HIT px of the cursor, matched by vehicle key (not list position).
+    const m = this.map, cv = document.createElement("canvas");
+    cv.className = "veh-overlay";
+    cv.style.cssText = "position:absolute;left:0;top:0;pointer-events:none;";
+    m.getCanvasContainer().appendChild(cv);
+    set = { handlers: new Map(), hover: true, features: [], drawn: [], cv, ctx: cv.getContext("2d"), raf: 0 };
+    const draw = () => {
+      set.raf = 0;
+      const dpr = devicePixelRatio || 1, W = m.getCanvas().clientWidth, H = m.getCanvas().clientHeight;
+      if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+        cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px";
+      }
+      const g = set.ctx;
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, W, H);
+      const scale = iconScale(m.getZoom()), drawn = [];
+      let ring = null;
+      for (const f of set.features) {
+        if (f.ring) { ring = f; continue; }
+        const p = m.project([f.lon, f.lat]);
+        if (p.x < -40 || p.y < -40 || p.x > W + 40 || p.y > H + 40) continue;   // off screen
+        const img = iconCanvas(f.icon), w = (img.width / 2) * scale, h = (img.height / 2) * scale;
+        g.save(); g.translate(p.x, p.y); if (f.rot) g.rotate((f.rot * Math.PI) / 180);
+        g.drawImage(img, -w / 2, -h / 2, w, h);
+        g.restore();
+        drawn.push({ x: p.x, y: p.y, f });
+      }
+      if (ring) {   // highlight ring around the selected vehicle
+        const p = m.project([ring.lon, ring.lat]);
+        g.beginPath(); g.arc(p.x, p.y, 17, 0, Math.PI * 2);
+        g.fillStyle = css("--accent") + "2e"; g.fill();
+        g.lineWidth = 3; g.strokeStyle = css("--accent"); g.stroke();
+      }
+      set.drawn = drawn;
+    };
+    set.schedule = () => { if (!set.raf) set.raf = requestAnimationFrame(draw); };
+    m.on("move", set.schedule);
+    m.on("resize", set.schedule);
+    // hover/click: nearest drawn vehicle within HIT px (icons are small and moving)
     const HIT = 12;
     const nearest = (pt) => {
-      const hits = m.queryRenderedFeatures([[pt.x - HIT, pt.y - HIT], [pt.x + HIT, pt.y + HIT]], { layers: [id] });
-      let best = null, bd = Infinity;
-      for (const f of hits) {
-        const p = m.project(f.geometry.coordinates), d = Math.hypot(p.x - pt.x, p.y - pt.y);
-        if (d < bd) { bd = d; best = f; }
+      let best = null, bd = HIT;
+      for (const d of set.drawn) {
+        if (d.f.key == null) continue;
+        const dist = Math.hypot(d.x - pt.x, d.y - pt.y);
+        if (dist < bd) { bd = dist; best = d.f; }
       }
       return best;
     };
@@ -299,22 +346,21 @@ GLMap.prototype.symbols = function (name, features, opts = {}) {
       const f = nearest(e.point);
       if (f) {
         m.getCanvas().style.cursor = "pointer"; set.hovering = true;
-        if (set.onHover) { if (set.hoverKey !== f.properties.k) { set.hoverKey = f.properties.k; set.onHover(f.properties.k); } }
-        else if (f.properties.tip) showTip(e.originalEvent, f.properties.tip);
+        if (set.onHover) { if (set.hoverKey !== f.key) { set.hoverKey = f.key; set.onHover(f.key); } }
+        else if (f.tip) showTip(e.originalEvent, f.tip);
       } else if (set.hovering) {
         set.hovering = false; m.getCanvas().style.cursor = ""; hideTip();
         if (set.onHover) { set.hoverKey = null; set.onHover(null); }
       }
     });
     m.on("mouseout", () => { if (set.onHover && set.hoverKey != null) { set.hoverKey = null; set.onHover(null); } });
-    m.on("click", (e) => { const f = nearest(e.point); const h = f && set.handlers.get(f.properties.k); if (h) { hideTip(); h(); } });
+    m.on("click", (e) => { const f = nearest(e.point); const h = f && set.handlers.get(f.key); if (h) { hideTip(); h(); } });
     this.sets[name] = set;
   }
+  set.features = features;
   set.handlers = new Map(features.filter((f) => f.onClick).map((f) => [f.key, f.onClick]));
   if (opts.onHover) set.onHover = opts.onHover;
-  this.map.getSource(set.id).setData({ type: "FeatureCollection", features: features.map((f, i) => ({
-    type: "Feature", geometry: { type: "Point", coordinates: [f.lon, f.lat] },
-    properties: { i, k: f.key ?? i, icon: f.icon, rot: f.rot || 0, tip: f.tip || "" } })) });
+  set.schedule();
 };
 const bearingOf = (a, b) => (Math.atan2((b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180), b[0] - a[0]) * 180) / Math.PI;
 // Split a route line into 100 m pieces so each can take its bin's color.
@@ -476,7 +522,7 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
     sel = target;
     if (!sel) {
       panelEl.hidden = true;
-      gl.points(`${name}-sel`, [], { hover: false });
+      if (gl.sets[name]) gl.symbols(name, gl.sets[name].features.filter((f) => !f.ring));
       return;
     }
     if (!ui) {
@@ -608,10 +654,8 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
           }
         }
       }
+      if (sel && selPos) feats.push({ ring: true, lat: selPos.lat, lon: selPos.lon });
       gl.symbols(name, feats, { onHover: hover });
-      // highlight ring around the selected vehicle (drawn above the icons, see-through)
-      gl.points(`${name}-sel`, sel && selPos ? [{ lat: selPos.lat, lon: selPos.lon, radius: 17, fill: css("--accent"),
-        fillOpacity: 0.18, stroke: css("--accent"), strokeWidth: 3 }] : [], { hover: false });
       if (sel) {
         // The trip the card was opened on has ended (finished the route, started another
         // run, laid over, or the GPS ran out): close the card.
