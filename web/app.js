@@ -733,7 +733,17 @@ function setupSheet() {
 }
 
 // ---------- timeline: one clock for the whole app ----------
-const SPEEDS = [60, 120, 300, 600];
+// playback speed slider: logarithmic from 30x to 1200x
+const SPEED_MIN = 30, SPEED_MAX = 1200;
+const speedFromSlider = (v) => SPEED_MIN * Math.pow(SPEED_MAX / SPEED_MIN, v / 1000);
+const sliderFromSpeed = (x) => Math.round((1000 * Math.log(x / SPEED_MIN)) / Math.log(SPEED_MAX / SPEED_MIN));
+const niceSpeed = (x) => (x < 100 ? Math.round(x / 5) * 5 : x < 400 ? Math.round(x / 10) * 10 : Math.round(x / 50) * 50);
+function setSpeed(x) {
+  UI.speed = niceSpeed(Math.min(Math.max(x, SPEED_MIN), SPEED_MAX));
+  $$("[data-speed-label]").forEach((el) => (el.textContent = `${UI.speed}×`));
+  $$("[data-speed]").forEach((el) => { if (document.activeElement !== el) el.value = sliderFromSpeed(UI.speed); });
+  $("#speed-note").textContent = UI.playing ? `playing at ${UI.speed}×` : "weekday average";
+}
 function setTime(t) {
   const lo = 18000, hi = 86340;
   UI.t = t > hi ? lo + (t - hi) : Math.max(lo, t);
@@ -757,7 +767,6 @@ function setPlaying(on) {
   UI.playing = on;
   $$("[data-glyph]").forEach((el) => (el.textContent = on ? "❚❚" : "▶"));
   $("#speed-note").textContent = on ? `playing at ${UI.speed}×` : "weekday average";
-  $("#speed-note").title = `Playback speed ${UI.speed}× (click to change)`;
   if (!on) return;
   let last = performance.now();
   const frame = (now) => {
@@ -772,7 +781,8 @@ function setPlaying(on) {
 function setupTimeline() {
   $$("[data-play]").forEach((b) => (b.onclick = () => setPlaying(!UI.playing)));
   $$("[data-scrub]").forEach((r) => r.addEventListener("input", () => setTime(+r.value)));
-  $("#speed-note").onclick = () => { UI.speed = SPEEDS[(SPEEDS.indexOf(UI.speed) + 1) % SPEEDS.length]; setPlaying(UI.playing); };
+  $$("[data-speed]").forEach((r) => r.addEventListener("input", () => setSpeed(speedFromSlider(+r.value))));
+  setSpeed(UI.speed);
   setPlaying(false);
 }
 // share of the (selected-mode) fleet stuck, each hour
@@ -798,17 +808,18 @@ function drawSpeed() {
     let run = null;
     const flush = () => {
       if (!run) return;
-      const f = { coords: run.pts, color: run.color, width: run.weight * (isRoute && mine ? 1.6 : 1), opacity: mine ? 0.92 : 0.12,
+      // Route explorer: one constant width, speed shown by color only
+      const f = { coords: run.pts, color: run.color, width: isRoute ? 5 : run.weight, opacity: mine ? 0.92 : 0.12,
         tip: `<b>${r.route}</b> → ${r.headsign}<br>${d3.min(run.mph)}–${d3.max(run.mph)} mph at ${fmtH(hour)}` };
       feats.push(f);
       // glow only where it's slow for a sustained stretch (>= 300 m under 6 mph), so real problems pop
-      if (mine && run.mph.length >= 3 && d3.mean(run.mph) < 6) glow.push({ coords: run.pts, color: SPEED_RAMP[0], width: 14, opacity: dark() ? 0.3 : 0.16 });
+      if (!isRoute && run.mph.length >= 3 && d3.mean(run.mph) < 6) glow.push({ coords: run.pts, color: SPEED_RAMP[0], width: 14, opacity: dark() ? 0.3 : 0.16 });
       run = null;
     };
     for (const p of binPieces(r, DATA.net.bin)) {
       const cell = row[p.bin];
       if (!cell) { flush(); continue; }
-      const color = speedColor(cell[0]), weight = cell[0] < 8 ? 4 : 2.5;
+      const color = speedColor(cell[0]), weight = isRoute ? 5 : cell[0] < 8 ? 4 : 2.5;
       if (run && run.color === color && run.weight === weight) { run.pts.push(...p.pts.slice(1)); run.mph.push(cell[0]); }
       else { flush(); run = { color, weight, pts: p.pts.slice(), mph: [cell[0]] }; }
     }

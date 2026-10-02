@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
-<link rel="stylesheet" href="style.css?v=1790965173">
+<link rel="stylesheet" href="style.css?v=1790966092">
 </head>
 <body>
 <div id="app">
@@ -47,6 +47,7 @@
   <div class="glass panel" id="panel">
     <div class="handle mobile-only" id="handle"><span></span></div>
     <div class="mtime mobile-only"><span class="mono" data-clock></span><input type="range" min="18000" max="86340" step="10" data-scrub aria-label="Time of day"></div>
+    <div class="mtime mspeed mobile-only"><span>Speed <b data-speed-label></b></span><input type="range" min="0" max="1000" step="1" data-speed aria-label="Playback speed"></div>
     <div class="panel-body">
       <section id="p-city">
         <div id="c-sel" class="mobile-only" hidden></div>
@@ -105,13 +106,14 @@
   <!-- desktop timeline -->
   <div class="glass timeline desk-only" id="timeline">
     <button class="play" data-play aria-label="Play or pause"><span data-glyph>▶</span></button>
-    <div class="tclock"><div class="mono" data-clock></div><button class="note" id="speed-note" title="Change playback speed"></button></div>
+    <div class="tclock"><div class="mono" data-clock></div><div class="note" id="speed-note"></div></div>
     <div class="tmain">
       <div class="bars" id="bars"></div>
       <input type="range" min="18000" max="86340" step="10" data-scrub aria-label="Time of day">
       <div class="ticks"><span>5am</span><span>9am</span><span>1pm</span><span>5pm</span><span>9pm</span><span>midnight</span></div>
     </div>
-    <div class="tcap">Bars: share of fleet stuck each hour</div>
+    <label class="tspeed" title="Playback speed"><span>Speed <b data-speed-label></b></span>
+      <input type="range" min="0" max="1000" step="1" data-speed aria-label="Playback speed"></label>
   </div>
 
   <!-- vehicle panel: beside the vehicle on desktop, under the top bar on mobile -->
@@ -242,6 +244,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
-<script src="app.js?v=1790965377"></script>
+<script src="app.js?v=1790966092"></script>
 </body>
 </html>
