@@ -26,7 +26,10 @@ sed -i.bak -E "s#(style\.css|app\.js)\?v=[0-9]+#\1?v=$(date +%s)#g" "$tmp/index.
 
 git -C "$tmp" init -q -b gh-pages
 git -C "$tmp" add -A
-git -C "$tmp" -c user.name="$(git config user.name)" -c user.email="$(git config user.email)" \
+# commit as the configured user, else as the author of the latest commit on this branch
+name=$(git config user.name || git log -1 --format=%an)
+email=$(git config user.email || git log -1 --format=%ae)
+git -C "$tmp" -c user.name="$name" -c user.email="$email" \
   commit -q -m "Deploy dashboard ($stamp, from $src)"
 git -C "$tmp" push -q --force "$remote" gh-pages
 echo "Deployed $(du -sh "$tmp" | cut -f1) to gh-pages ($stamp, from $src)"
