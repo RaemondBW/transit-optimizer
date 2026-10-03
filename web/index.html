@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
-<link rel="stylesheet" href="style.css?v=1790966092">
+<link rel="stylesheet" href="style.css?v=1790983644">
 </head>
 <body>
 <div id="app">
@@ -100,6 +100,79 @@
         <div class="heat" id="r-heat"></div>
         <div class="axis2"><span id="r-from"></span><span id="r-to"></span></div>
       </section>
+
+      <section id="p-signals" hidden>
+        <div class="eyebrow">Traffic signals · <span id="sig-mode-l"></span> · <span id="sig-when-l"></span></div>
+        <h1 class="headline" id="sig-headline"></h1>
+        <div id="sig-tiles" class="tiles"></div>
+        <div class="pickers">
+          <label>When <select id="sig-hour"><option value="">All day</option><option value="clock">Clock hour</option></select></label>
+          <label>Rank by <select id="sig-rank"><option value="hours">Total time held</option><option value="wait">Wait per vehicle</option></select></label>
+        </div>
+        <div class="keys" id="sig-legend"></div>
+        <div id="sig-detail"></div>
+        <div class="hrow"><h3>Signals holding transit the most</h3><span class="muted" id="sig-unit">vehicle-hours / day</span></div>
+        <div id="sig-list"></div>
+        <p class="foot">Every signalized intersection in SF (SFMTA inventory), scored by how long buses and trains sit in the ~75 m queue before it: stopped away from a bus stop, or crawling under 5 mph. Time at a bus stop right before a light is counted separately.</p>
+      </section>
+
+      <section id="p-stops" hidden>
+        <div class="pickers">
+          <label>Route <select id="stop-route"></select></label>
+          <label>Direction <select id="stop-dir"></select></label>
+        </div>
+        <div class="eyebrow" style="margin-top:16px">Stop consolidation</div>
+        <h1 class="headline" style="font-size:24px">Fewer stops, faster trips?</h1>
+        <div class="spacing">
+          <div class="srow"><span>Max spacing</span><b id="stop-target-label"></b></div>
+          <input type="range" id="stop-target" min="300" max="1000" step="20" value="520" aria-label="Target max spacing">
+          <div class="btns"><button id="stop-auto" class="primary">Auto-consolidate</button><button id="stop-reset" class="ghost">Reset</button></div>
+        </div>
+        <div id="stop-tiles" class="tiles"></div>
+        <details class="assume"><summary>Assumptions</summary>
+          <div class="pgrid">
+            <label title="Extra time lost to decelerating into and accelerating out of a stop">Accel/decel loss <span><input type="number" id="p-accel" value="12" min="0" max="40"> s</span></label>
+            <label title="Door open/close, kneeling, re-entering traffic">Fixed door time <span><input type="number" id="p-door" value="6" min="0" max="30"> s</span></label>
+            <label title="Average time a bus is stopped when it does stop; turns measured stopped-seconds into how often buses halt">Avg dwell per halt <span><input type="number" id="p-dwell" value="20" min="5" max="60"> s</span></label>
+            <label title="Walking speed for riders at removed stops">Walk speed <span><input type="number" id="p-walk" value="1.2" step="0.1" min="0.5" max="2"> m/s</span></label>
+            <label class="chk"><input type="checkbox" id="p-protect" checked> Keep transfer stops</label>
+            <label class="chk"><input type="checkbox" id="p-rapid"> Keep Rapid stops</label>
+          </div>
+        </details>
+        <details class="assume"><summary>Reality check from Muni's Rapid routes</summary><div id="calib" class="small"></div></details>
+        <div class="hrow"><h3>Stops</h3><span class="muted">tap to remove / restore · bar = how often buses halt</span></div>
+        <div id="stop-list" class="stoplist"></div>
+      </section>
+
+      <section id="p-market" hidden>
+        <div class="eyebrow">Market St trunk · <span data-hour></span></div>
+        <h1 class="headline" style="font-size:24px">One line under Market St?</h1>
+        <p class="small muted">Five Metro lines share the Market St subway, each merging in at a portal. What if one line ran Embarcadero ↔ West Portal and the rest ended at the subway, with riders transferring underground? Buses on Market St could do the same. Uses the timeline's hour.</p>
+        <h3>Metro: one line in the subway</h3>
+        <div id="tk-tiles" class="tiles"></div>
+        <details class="assume"><summary>Assumptions</summary>
+          <div class="pgrid">
+            <label title="Trains per hour on the trunk. Blank = same as today at that hour">Trunk trains/hour <span><input type="number" id="tk-tph" placeholder="as today" min="6" max="40" step="1" style="width:84px"></span></label>
+            <label title="Between the branch and trunk platforms">Transfer walk <span><input type="number" id="tk-walk" value="1.5" min="0" max="10" step="0.5"> min</span></label>
+            <label title="Coefficient of variation of the trunk's gaps; 0 = perfectly even">Trunk regularity <span><input type="number" id="tk-cv" value="0.25" min="0" max="1.5" step="0.05"> CV</span></label>
+            <label title="Time for a trunk train to reverse at each end">Turnback <span><input type="number" id="tk-turn" value="3" min="0" max="10" step="0.5"> min</span></label>
+          </div>
+        </details>
+        <div id="tk-table"></div>
+        <div id="tk-notes" class="foot"></div>
+        <h3>Buses: end at a subway station</h3>
+        <div id="mk-tiles" class="tiles"></div>
+        <details class="assume"><summary>Assumptions</summary>
+          <div class="pgrid">
+            <label title="Bus stop to platform, incl. stairs and fare gates">Transfer walk <span><input type="number" id="mk-walk" value="3" min="0" max="10" step="0.5"> min</span></label>
+            <label title="Extra perceived cost of transferring (0 = real minutes only)">Transfer penalty <span><input type="number" id="mk-penalty" value="0" min="0" max="15" step="1"> min</span></label>
+            <label title="Time for a truncated bus to turn around">Turnaround <span><input type="number" id="mk-turn" value="4" min="0" max="15" step="1"> min</span></label>
+          </div>
+        </details>
+        <div id="mk-routes"></div>
+        <div id="mk-table"></div>
+        <div id="mk-notes" class="foot"></div>
+      </section>
     </div>
   </div>
 
@@ -121,26 +194,6 @@
 
   <!-- the screens not yet redesigned keep their layout inside a large panel -->
   <div class="glass page" id="page" hidden>
-  <!-- SIGNALS -->
-  <section id="tab-signals" class="tab">
-    <p class="lede">Every signalized intersection in SF (SFMTA inventory), scored by how long buses and trains sit in the ~75 m queue before it:
-      stopped away from a bus stop, or crawling under 5 mph. Time spent at a bus stop right before a light (a near-side stop) is shown separately, since boarding and the red light overlap there.</p>
-    <div class="controls">
-      <label>Mode <select id="sig-mode"><option value="">All transit</option><option value="bus">Buses</option><option value="rail">Metro trains (surface)</option><option value="streetcar">F streetcar</option><option value="cable">Cable cars</option></select></label>
-      <label>When <select id="sig-hour"><option value="">All day</option></select></label>
-      <label>Rank by <select id="sig-rank"><option value="hours">Total time held (vehicle-hours/day)</option><option value="wait">Average wait per vehicle</option></select></label>
-      <span class="legend" id="sig-legend"></span>
-    </div>
-    <div id="sig-tiles" class="tiles"></div>
-    <div class="split">
-      <div id="sig-map" class="map"></div>
-      <div class="side">
-        <div id="sig-detail"></div>
-        <h3>Signals holding transit the most</h3>
-        <ol id="sig-list" class="hot"></ol>
-      </div>
-    </div>
-  </section>
 
   <!-- BUSES -->
   <section id="tab-buses" class="tab">
@@ -159,79 +212,7 @@
     <div id="bus-timelines" class="chart wide"></div>
   </section>
 
-  <!-- STOPS -->
-  <section id="tab-stops" class="tab">
-    <div class="controls">
-      <label>Route <select id="stop-route"></select></label>
-      <label>Direction <select id="stop-dir"></select></label>
-      <label>Target max spacing <input type="range" id="stop-target" min="300" max="1000" step="20" value="520"> <b id="stop-target-label"></b></label>
-      <button id="stop-auto">Auto-consolidate</button>
-      <button id="stop-reset" class="ghost">Reset</button>
-    </div>
-    <div class="controls params">
-      <label title="Extra time lost to decelerating into and accelerating out of a stop">Accel/decel loss <input type="number" id="p-accel" value="12" min="0" max="40"> s</label>
-      <label title="Door open/close, kneeling, re-entering traffic, independent of how many board">Fixed door time <input type="number" id="p-door" value="6" min="0" max="30"> s</label>
-      <label title="Average time a bus spends stopped when it does stop (doors + boarding). Used to turn measured stopped-seconds into how often buses halt at each stop.">Avg dwell per halt <input type="number" id="p-dwell" value="20" min="5" max="60"> s</label>
-      <label title="Walking speed for riders at removed stops">Walk speed <input type="number" id="p-walk" value="1.2" step="0.1" min="0.5" max="2"> m/s</label>
-      <label><input type="checkbox" id="p-protect" checked> Keep transfer stops</label>
-      <label><input type="checkbox" id="p-rapid"> Keep Rapid stops</label>
-    </div>
-    <div id="stop-tiles" class="tiles"></div>
-    <div class="split">
-      <div id="stop-map" class="map"></div>
-      <div class="side">
-        <div id="calib" class="note"></div>
-        <h3>Stops <small>click to remove/restore. Bar = estimated share of trips that halt there (from measured stopped time).</small></h3>
-        <div id="stop-list" class="stoplist"></div>
-      </div>
-    </div>
-  </section>
 
-  <!-- MARKET -->
-  <section id="tab-market" class="tab">
-    <h2 class="pg-title">Market St trunk</h2>
-    <p class="lede">Under Market St, five Metro lines (J, K, L, M, N) share one subway. Every train has to merge in at a portal, and a delay on any branch spills into the tunnel for everyone.
-      What if <b>one line ran in the subway</b>, as a frequent, evenly spaced shuttle between Embarcadero and West Portal, and the other lines ended at the subway, where riders transfer underground?
-      The same idea works for buses that drive the length of Market St above it.</p>
-    <div class="controls">
-      <label>Hour <input type="range" id="mk-hour" min="6" max="22" value="8"> <b id="mk-hour-label"></b></label>
-    </div>
-
-    <h3 class="sec">Metro: one line in the subway</h3>
-    <div class="controls">
-      <label title="Trains per hour on the trunk. Blank = same as the subway carries today at that hour">Trunk trains/hour <input type="number" id="tk-tph" placeholder="as today" min="6" max="40" step="1" style="width:84px"></label>
-      <label title="Walking between the branch platform and the trunk platform (cross-platform at West Portal, underground at Van Ness)">Transfer walk <input type="number" id="tk-walk" value="1.5" min="0" max="10" step="0.5"> min</label>
-      <label title="How uneven the trunk's spacing is (coefficient of variation of the gaps). 0 = perfectly even; one line on its own track can run close to even">Trunk regularity <input type="number" id="tk-cv" value="0.25" min="0" max="1.5" step="0.05"> CV</label>
-      <label title="Time for a trunk train to reverse at each end">Turnback <input type="number" id="tk-turn" value="3" min="0" max="10" step="0.5"> min</label>
-    </div>
-    <div id="tk-tiles" class="tiles"></div>
-    <div class="split">
-      <div id="tk-map" class="map"></div>
-      <div class="side">
-        <div id="tk-table"></div>
-        <div id="tk-notes" class="note"></div>
-      </div>
-    </div>
-
-    <h3 class="sec">Buses: end at a subway station</h3>
-    <p class="lede">Several bus routes also run the length of Market St, directly above the subway. If they ended at a station and riders transferred down to the trains, the buses saved could run more often on the rest of each route.</p>
-    <div class="controls">
-      <label title="Walking from the bus stop to the platform, including stairs and fare gates">Transfer walk <input type="number" id="mk-walk" value="3" min="0" max="10" step="0.5"> min</label>
-      <label title="Extra perceived cost of transferring, used by planners (0 = count only real minutes)">Transfer penalty <input type="number" id="mk-penalty" value="0" min="0" max="15" step="1"> min</label>
-      <label title="Time for a truncated bus to turn around at the new terminal">Turnaround <input type="number" id="mk-turn" value="4" min="0" max="15" step="1"> min</label>
-    </div>
-    <div id="mk-tiles" class="tiles"></div>
-    <div class="split">
-      <div id="mk-map" class="map"></div>
-      <div class="side">
-        <h3>Routes to truncate</h3>
-        <div id="mk-routes"></div>
-      </div>
-    </div>
-    <h3>Rider trade-off <small>through-riders headed downtown: stay on the bus vs transfer to the subway</small></h3>
-    <div id="mk-table"></div>
-    <div id="mk-notes" class="note"></div>
-  </section>
 
   <section id="tab-about" class="tab prose" ></section>
   </div>
@@ -244,6 +225,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
-<script src="app.js?v=1790979360"></script>
+<script src="app.js?v=1790983644"></script>
 </body>
 </html>

@@ -742,14 +742,18 @@ const modeOk = (m) => UI.mode === "all" || m === UI.mode;
 const $$ = (q) => [...document.querySelectorAll(q)];
 
 // ---------- map padding / mobile sheet ----------
-const snaps = () => [150, Math.round(innerHeight * 0.5), innerHeight - 64 - 104];
+const snaps = () => [150, Math.round(innerHeight * 0.42), innerHeight - 64 - 104];
 const sheetH = () => UI.sheetH ?? snaps()[1];
 const padding = () => (isDesk() ? { left: 412, top: 80, right: 250, bottom: 120 }
-  : { left: 10, right: 10, top: UI.tab === "city" ? 130 : 84, bottom: Math.min(sheetH(), innerHeight - 200) });
-function applyLayout() {
+  : { left: 10, right: 10, top: UI.tab === "city" || UI.tab === "signals" ? 130 : 84, bottom: Math.min(sheetH(), innerHeight - 200) });
+function applyLayout(refit = true) {
   const panel = $("#panel");
   panel.style.height = isDesk() ? "" : sheetH() + "px";
-  if (M) { M.resize(); M.map.easeTo({ padding: padding(), duration: 250 }); }
+  if (!M) return;
+  M.resize();
+  // keep the page's subject in view above the sheet (but not while zoomed into a picked spot)
+  if (refit && UI.selHot == null && !(UI.tab === "signals" && sg.flown)) fitView(300);
+  else M.map.easeTo({ padding: padding(), duration: 250 });
 }
 function setupSheet() {
   const handle = $("#handle"), panel = $("#panel");
@@ -806,6 +810,8 @@ function onHour() {
   drawSpeed();
   if (UI.tab === "city") drawCityStats();
   if (UI.tab === "route" && rt.data) drawRoutePanel();
+  if (UI.tab === "signals" && $("#sig-hour").value === "clock") renderSignals();
+  if (UI.tab === "market") { if (DATA.trunk) renderTrunk(); if (mk.routes) renderMarket(); }
 }
 function setPlaying(on) {
   UI.playing = on;
@@ -841,7 +847,7 @@ function drawBars() {
 
 // ---------- speed lines (shared by City and Route) ----------
 function drawSpeed() {
-  if (!M || !DATA.heat) return;
+  if (!M || !DATA.heat || (UI.tab !== "city" && UI.tab !== "route")) return;
   const hour = clampHour(UI.hour), feats = [], glow = [];
   const isRoute = UI.tab === "route";
   for (const r of DATA.net.routes) {
@@ -940,7 +946,7 @@ function pickHot(i) {
     const pad = parseFloat(getComputedStyle(body).paddingTop) + 14;
     UI.sheetH = Math.min(snaps()[1], Math.max(snaps()[0], chrome + card.offsetHeight + pad));
     body.scrollTop = 0;
-    applyLayout();
+    applyLayout(false);
   } else {
     $("#c-hot .hot-row.sel")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
@@ -955,12 +961,7 @@ async function loadRoute(key) {
   drawRoutePanel();
   drawSpeed();
   if (fleet) fleet.update(UI.t);
-  M.ready.then(() => {
-    // the map already carries the panels' padding; fitBounds adds this on top
-    M.map.setPadding(padding());
-    const lats = rt.route.line.map((p) => p[0]), lons = rt.route.line.map((p) => p[1]);
-    M.map.fitBounds([[d3.min(lons), d3.min(lats)], [d3.max(lons), d3.max(lats)]], { padding: 30, duration: 700, maxZoom: 14.5 });
-  });
+  fitView();
 }
 function drawRoutePanel() {
   const r = rt.route, d = rt.data, hour = clampHour(UI.hour);
@@ -1019,6 +1020,7 @@ function drawChips() {
 }
 function onModeChange() {
   drawBars(); drawSpeed(); drawCityStats(); drawHotspots();
+  if (UI.tab === "signals") renderSignals();
   if (fleet) fleet.update(UI.t);
 }
 function drawTabs() {
@@ -1070,13 +1072,14 @@ function drawBuses() {
   const sorters = { stuck: (a, b) => stuck(b) - stuck(a), service: (a, b) => svc(b) - svc(a), layover: (a, b) => b.hours[4] - a.hours[4], id: (a, b) => a.v - b.v };
   list.sort(sorters[$("#bus-sort").value]);
   list = list.slice(0, 250);
-  const rowH = 14, m = { l: 150, r: 10, t: 22, b: 4 };
-  const W = Math.max(el.clientWidth - 16, 700), w = W - m.l - m.r;
+  const narrow = innerWidth < 600;   // phones: fit the whole day on screen instead of scrolling sideways
+  const rowH = 14, m = { l: narrow ? 112 : 150, r: 8, t: 22, b: 4 };
+  const W = narrow ? el.clientWidth - 16 : Math.max(el.clientWidth - 16, 700), w = W - m.l - m.r;
   const x = d3.scaleLinear().domain([4 * 3600, 24.5 * 3600]).range([0, w]);
   const H = list.length * rowH + m.t + m.b;
   const svg = d3.select(el).append("svg").attr("width", W).attr("height", H);
   const g = svg.append("g").attr("transform", `translate(${m.l},${m.t})`);
-  g.append("g").attr("class", "axis").attr("transform", `translate(0,-4)`).call(d3.axisTop(x).tickValues(d3.range(4, 25, 2).map((h) => h * 3600)).tickFormat((t) => fmtH(t / 3600)));
+  g.append("g").attr("class", "axis").attr("transform", `translate(0,-4)`).call(d3.axisTop(x).tickValues(d3.range(4, 25, narrow ? 4 : 2).map((h) => h * 3600)).tickFormat((t) => fmtH(t / 3600)));
   // One path per state keeps thousands of segments cheap in SVG.
   const paths = Array(8).fill("");
   list.forEach((b, j) => {
@@ -1091,7 +1094,7 @@ function drawBuses() {
   paths.forEach((p, c) => p && bars.append("path").attr("d", p).attr("fill", stColor(c)));
   list.forEach((b, j) => {
     g.append("text").attr("x", -6).attr("y", j * rowH + rowH / 2 + 4).attr("text-anchor", "end")
-      .text(`#${b.v} · ${b.routes.slice(0, 2).join("/")} · ${Math.round(stuck(b) * 100)}%`);
+      .text(narrow ? `${b.routes[0] || ""} #${b.v} ${Math.round(stuck(b) * 100)}%` : `#${b.v} · ${b.routes.slice(0, 2).join("/")} · ${Math.round(stuck(b) * 100)}%`);
   });
   g.append("rect").attr("width", w).attr("height", list.length * rowH).attr("fill", "transparent")
     .on("mousemove", (ev) => {
@@ -1116,8 +1119,6 @@ function drawBuses() {
 // =====================================================================
 const sc = { removed: new Set() };
 function initStops() {
-  sc.map = makeMap("stop-map");
-  sc.map.lines("route", []); sc.map.points("stops", []);
   const startKey = makeRoutePicker($("#stop-route"), $("#stop-dir"), (k) => loadStops(k), "38_0");
   const tg = $("#stop-target");
   const lab = () => ($("#stop-target-label").textContent = `${tg.value} m (${Math.round(tg.value * 3.28)} ft)`);
@@ -1158,10 +1159,12 @@ function stopInfo(r) {
   });
 }
 async function loadStops(key) {
-  sc.key = key; sc.route = routeByKey(key); sc.data = await routeData(key);
+  const data = await routeData(key);   // set state only once loaded, so a render never sees half of it
+  sc.key = key; sc.route = routeByKey(key); sc.data = data;
   sc.info = stopInfo(sc.route);
   sc.removed.clear();
-  sc.map.ready.then(() => sc.map.fit(sc.route.line));
+  fitLine(sc.route.line);
+  if (fleet) fleet.update(UI.t);
   renderStops();
 }
 // Share of trips that halt at a stop. GPS pings every ~30 s miss short halts, so
@@ -1234,7 +1237,6 @@ function renderStops() {
     ["Stops", `${st.length} → ${keptN}`, `spacing ${Math.round(spacingBefore)} → ${Math.round(spacingAfter)} m`],
     ["Time saved per trip", `${(res.saved / 60).toFixed(1)} min`, peakRt ? `${Math.round(newHeadwayPct * 100)}% of a ${Math.round(peakRt)}-min 5pm trip` : ""],
     ["Bus-hours freed per weekday", busHours.toFixed(1), `this direction, ${Math.round(perDay)} trips/day`],
-    ["Same buses, more service", `+${Math.round((1 / (1 - newHeadwayPct) - 1) * 100)}%`, "frequency if savings reinvested"],
     ["Extra walk (removed stops)", res.walks.length ? `${Math.round(avgWalk)} m` : "–", res.walks.length ? `≈ ${(avgWalk / walkSpeed / 60).toFixed(1)} min for those riders` : "only riders at removed stops"],
   ].map(([l, v, d]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
 
@@ -1255,8 +1257,8 @@ function renderStops() {
     list.appendChild(row);
   });
 
-  sc.map.lines("route", [{ coords: r.line, color: r.color, width: 4, opacity: 0.6 }]);
-  sc.map.points("stops", st.map((s, i) => {
+  M.lines("stop-route", [{ coords: r.line, color: r.color, width: 5, opacity: 0.75 }]);
+  M.points("stop-pts", st.map((s, i) => {
     const removed = sc.removed.has(i), locked = isProtected(r, s, i);
     const why = i === 0 || i === st.length - 1 ? "terminal"
       : [sc.info[i].rapid ? "Rapid stop" : "", sc.info[i].transfers.length ? "transfer to " + sc.info[i].transfers.join(", ") : ""].filter(Boolean).join(" · ");
@@ -1279,14 +1281,12 @@ const tk = {};
 async function initTrunk() {
   DATA.trunk = DATA.trunk || await getJSON("data/trunk.json").catch(() => null);
   if (!DATA.trunk) { $("#tk-tiles").innerHTML = `<p class="muted">Run the pipeline to produce data/trunk.json.</p>`; return; }
-  tk.map = makeMap("tk-map", { center: [37.772, -122.44], zoom: 12.6 });
-  tk.map.lines("branch", []); tk.map.lines("trunk", []); tk.map.points("stations", []);
   ["#tk-tph", "#tk-walk", "#tk-cv", "#tk-turn"].forEach((q) => $(q).addEventListener("input", renderTrunk));
   renderTrunk();
 }
 function renderTrunk() {
   const T = DATA.trunk; if (!T) return;
-  const hour = +$("#mk-hour").value, walk = +$("#tk-walk").value, cv = +$("#tk-cv").value, turn = +$("#tk-turn").value;
+  const hour = Math.min(Math.max(clampHour(UI.hour), 6), 22), walk = +$("#tk-walk").value, cv = +$("#tk-cv").value, turn = +$("#tk-turn").value;
   const near = (obj, h) => obj?.[h] ?? obj?.[h + 1] ?? obj?.[h - 1];
   const vn = near(T.van_ness, hour) || [0, 0, 0];
   const todayTph = vn[0];
@@ -1327,43 +1327,40 @@ function renderTrunk() {
     ["Queueing at portals removed", `${mergeH.toFixed(0)} h/day`, "train-hours merging at West Portal & Duboce"],
     ["Train-hours per weekday", `${freedH - trunkH >= 0 ? "−" : "+"}${Math.abs(freedH - trunkH).toFixed(0)}`, `branches stop running the subway (${freedH.toFixed(0)} h) vs the trunk itself (${trunkH.toFixed(0)} h)`],
   ].map(([l, v, d]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
-  $("#tk-table").innerHTML = `<table><thead><tr><th>Line</th><th>Transfer at</th><th>Merge delay today</th><th>To ${dest} today</th><th>With trunk</th><th>Typical day</th><th>Bad day</th></tr></thead><tbody>
-    ${rows.map((x) => `<tr><td><span class="rb" style="background:${routeByKeyFast(x.l.key)?.color || "#666"}">${x.l.route}</span></td><td>${x.l.transfer}</td>
-      <td>${x.merge.toFixed(1)} min</td><td>${x.today[0].toFixed(1)} <span class="muted">/ ${x.today[1].toFixed(1)}</span></td>
-      <td>${x.med.toFixed(1)} <span class="muted">/ ${x.bad.toFixed(1)}</span></td>
-      <td class="${x.dMed <= 0 ? "pos" : "neg"}"><b>${fmt(x.dMed)}</b></td><td class="${x.dBad <= 0 ? "pos" : "neg"}"><b>${fmt(x.dBad)}</b></td></tr>`).join("")}
-    </tbody></table>`;
+  $("#tk-table").innerHTML = rows.map((x) => `<div class="cmp-row">
+      <div class="cmp-head"><span class="rb" style="background:${routeByKeyFast(x.l.key)?.color || "#666"}">${x.l.route}</span>
+        <span>transfer at ${x.l.transfer}</span><span class="muted">merge ${x.merge.toFixed(1)} min today</span></div>
+      <div class="cmp-body"><span>to ${dest}: <b>${x.today[0].toFixed(1)}</b> → <b>${x.med.toFixed(1)}</b> min</span>
+        <span class="dl"><span class="muted">typical</span> <span class="${x.dMed <= 0 ? "pos" : "neg"}">${fmt(x.dMed)}</span></span>
+        <span class="dl"><span class="muted">bad day</span> <span class="${x.dBad <= 0 ? "pos" : "neg"}">${fmt(x.dBad)}</span></span></div></div>`).join("");
   $("#tk-notes").innerHTML = `<b>How to read this.</b> A rider starting ${T.lines[0]?.approach_m || 400} m before their line's tunnel portal, headed to ${dest}, at ${fmtH(hour)}.
     <i>Today</i>: ride straight through, including the queue to merge at the portal (median / 90th percentile, measured).
     <i>With trunk</i>: ride the branch at free-flow speed to the transfer station (no merge queue), walk ${walk} min to the trunk platform, wait for a trunk train (half its headway, adjusted for regularity; a full headway on a bad day), then the measured subway ride.
     Not modeled: whether one line's trains can carry everyone (longer trains or more frequent service would be needed at peak), new turnback tracks at West Portal and Van Ness, and the comfort cost of transferring.`;
   // map: trunk + branches ending at their transfer stations
   const trunkLine = routeByKeyFast("K_1"), wp = DATA.trunk.lines.find((l) => l.route === "K");
-  tk.map.lines("trunk", trunkLine && wp ? [{ coords: trunkLine.line.filter((p) => p[2] >= wp.station_d["West Portal"] - 5 && p[2] <= wp.station_d.Embarcadero + 5),
+  M.lines("tk-trunk", trunkLine && wp ? [{ coords: trunkLine.line.filter((p) => p[2] >= wp.station_d["West Portal"] - 5 && p[2] <= wp.station_d.Embarcadero + 5),
     color: css("--accent"), width: 7, opacity: 0.95, tip: `<b>Trunk</b>: Embarcadero ↔ West Portal, ${Math.round(tph)} trains/h` }] : []);
-  tk.map.lines("branch", T.lines.map((l) => {
+  M.lines("tk-branch", T.lines.map((l) => {
     const r = routeByKeyFast(l.key), end = l.station_d[l.transfer] ?? l.entry_d;
     return r ? { coords: r.line.filter((p) => p[2] <= end), color: r.color, width: 3.5, opacity: 0.9, tip: `<b>${l.route}</b> ends at ${l.transfer}; riders transfer to the trunk` } : null;
   }).filter(Boolean));
   const transfers = new Set(T.lines.map((l) => l.transfer));
-  tk.map.points("stations", Object.entries(T.station_ll).map(([n, ll]) => ({ lat: ll[0], lon: ll[1], radius: transfers.has(n) ? 7 : 4.5,
+  M.points("tk-st", Object.entries(T.station_ll).map(([n, ll]) => ({ lat: ll[0], lon: ll[1], radius: transfers.has(n) ? 7 : 4.5,
     fill: css("--surface"), stroke: transfers.has(n) ? css("--accent") : css("--text"), strokeWidth: transfers.has(n) ? 3 : 1.5,
     tip: `${n}${transfers.has(n) ? " · transfer station" : ""}` })));
 }
 
 function initMarket() {
   initTrunk();
-  $("#mk-hour").addEventListener("input", renderTrunk);
-  mk.map = makeMap("mk-map", { center: [37.781, -122.415], zoom: 14 });
-  mk.map.lines("kept", []); mk.map.lines("cut", [], { dash: [2, 2] }); mk.map.points("stations", []);
-  const M = DATA.market;
+  const MK = DATA.market;
   // One card per route (pairing both directions).
-  mk.routes = d3.groups(M.routes.filter((r) => ["7", "9R", "5R", "F"].includes(r.route) || r.on_market_m > 1500), (r) => r.route)
+  mk.routes = d3.groups(MK.routes.filter((r) => ["7", "9R", "5R", "F"].includes(r.route) || r.on_market_m > 1500), (r) => r.route)
     .map(([route, dirs]) => ({ route, inb: dirs.find((d) => d.inbound), outb: dirs.find((d) => !d.inbound) }))
     .filter((r) => r.inb && r.outb);
   // The F is itself the Market St line, so cutting it mostly deletes it: off by default.
   mk.routes.forEach((r) => { if (r.route !== "F") mk.on.add(r.route); mk.station[r.route] = r.inb.stations[0] === "Castro" ? "Church" : r.inb.stations[0]; });
-  ["#mk-hour", "#mk-walk", "#mk-penalty", "#mk-turn"].forEach((s) => $(s).addEventListener("input", renderMarket));
+  ["#mk-walk", "#mk-penalty", "#mk-turn"].forEach((s) => $(s).addEventListener("input", renderMarket));
   Promise.all(mk.routes.flatMap((r) => [routeData(r.inb.key), routeData(r.outb.key)])).then(renderMarket);
 }
 // Bus running time over [d0, d1] of a route at an hour, from the speed grid.
@@ -1380,8 +1377,7 @@ function segMinutes(rd, d0, d1, hour) {
   return t / 60;
 }
 function renderMarket() {
-  const M = DATA.market, hour = +$("#mk-hour").value;
-  $("#mk-hour-label").textContent = fmtH(hour);
+  const MK = DATA.market, hour = Math.min(Math.max(clampHour(UI.hour), 6), 22);
   const walk = +$("#mk-walk").value, pen = +$("#mk-penalty").value, turn = +$("#mk-turn").value;
   const box = $("#mk-routes");
   box.innerHTML = "";
@@ -1419,8 +1415,8 @@ function renderMarket() {
       const ds = r.inb.stations.slice(r.inb.stations.indexOf(S) + 1);
       for (const X of ds) {
         const bus = r.inb.bus_pair_min[`${S}|${X}`]?.[hour];
-        const sched = M.subway.in?.[`${S}|${X}`]?.[hour];          // [trains/h, min]
-        const obs = M.subway_obs?.in?.[`${S}|${X}`]?.[hour];        // [median, p90, n, trains/h]
+        const sched = MK.subway.in?.[`${S}|${X}`]?.[hour];          // [trains/h, min]
+        const obs = MK.subway_obs?.in?.[`${S}|${X}`]?.[hour];        // [median, p90, n, trains/h]
         if (!bus || (!sched && !obs)) continue;
         // measured ride time when we have it; frequency from the schedule (a single day undercounts
         // trains that run through only part of the pair)
@@ -1452,9 +1448,9 @@ function renderMarket() {
     card.querySelector("select").onchange = (e) => { mk.station[r.route] = e.target.value; renderMarket(); };
     box.appendChild(card);
   }
-  mk.map.lines("kept", kept);
-  mk.map.lines("cut", cut, { dash: [2, 2] });
-  mk.map.points("stations", Object.entries(M.station_ll).map(([n, ll]) => ({
+  M.lines("mk-kept", kept);
+  M.lines("mk-cut", cut, { dash: [2, 2] });
+  M.points("mk-st", Object.entries(MK.station_ll).map(([n, ll]) => ({
     lat: ll[0], lon: ll[1], radius: 6, fill: css("--surface"), stroke: css("--text"), strokeWidth: 2, tip: `${n} (Muni Metro)` })));
   const active = rows.filter((x) => mk.on.has(x.route));
   const winners = active.filter((x) => x.net < 0).length;
@@ -1463,10 +1459,11 @@ function renderMarket() {
     ["≈ buses freed at this hour", totBuses.toFixed(1), "to redeploy on the rest of each route"],
     ["Downtown trips faster by subway", `${winners} / ${active.length}`, "origin–destination pairs, incl. frequency gain"],
   ].map(([l, v, d]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
-  $("#mk-table").innerHTML = active.length ? `<table><thead><tr><th>Route</th><th>From → to</th><th>Bus (median)</th><th>Bus (bad day)</th><th>Walk</th><th>Train wait</th><th>Train ride (measured)</th><th>Penalty</th><th>Better wait upstream</th><th>Net change</th></tr></thead><tbody>
-    ${active.map((x) => `<tr><td>${x.route}</td><td>${x.S} → ${x.X}</td><td>${fmtMin(x.bus)}</td><td>${fmtMin(x.bus90)}</td><td>${walk}</td><td>${x.wait.toFixed(1)} <span class="muted">(${x.tph}/h)</span></td><td>${x.sub.toFixed(1)}${x.measured && x.subSched != null ? ` <span class="muted">(sched ${x.subSched.toFixed(1)})</span>` : ""}</td><td>${pen}</td><td>−${x.gain.toFixed(1)}</td>
-      <td class="${x.net < 0 ? "pos" : "neg"}"><b>${x.net > 0 ? "+" : ""}${x.net.toFixed(1)} min</b></td></tr>`).join("")}
-    </tbody></table>` : `<p class="muted">Select a route to see rider impacts.</p>`;
+  $("#mk-table").innerHTML = active.length ? `<div class="hrow"><h3 style="font-size:14px">Riders headed downtown</h3><span class="muted">stay on the bus vs transfer</span></div>` +
+    active.map((x) => `<div class="cmp-row"><div class="cmp-head"><span class="rb" style="background:${routeColor(x.route)}">${x.route}</span><span>${x.S} → ${x.X}</span></div>
+      <div class="cmp-body"><span>bus <b>${fmtMin(x.bus)}</b> · subway <b>${(x.via).toFixed(1)} min</b></span>
+      <span class="${x.net < 0 ? "pos" : "neg"}">${x.net > 0 ? "+" : ""}${x.net.toFixed(1)} min</span><span class="muted">walk ${walk} + wait ${x.wait.toFixed(1)} + ride ${x.sub.toFixed(1)}</span></div></div>`).join("")
+    : `<p class="muted">Select a route to see rider impacts.</p>`;
   $("#mk-notes").innerHTML = `<b>How to read this.</b> Bus times are measured from GPS traces on Market St at ${fmtH(hour)} (${dataLabel()}); subway ride times are <b>measured</b> from Muni Metro GPS at the same hour (the schedule is shown alongside and is often optimistic); train frequency comes from the weekday schedule.
     "Better wait upstream" is the shorter average wait for everyone boarding the rest of the route once freed buses run more often (half the headway improvement).
     The F streetcar is off by default: it <i>is</i> the Market St surface line, so truncating it mostly removes it rather than shortening it.
@@ -1495,46 +1492,62 @@ function sigStats(o, mode, hour) {
   return { hours, wait, passes, apps };
 }
 function initSignals() {
-  if (!DATA.sig) { $("#tab-signals").innerHTML = "<p>No signal data. Run the pipeline with data/signals/traffic_signals.json.</p>"; return; }
-  sg.map = makeMap("sig-map");
-  sg.map.points("signals", []);
-  for (let h = 5; h < 24; h++) $("#sig-hour").insertAdjacentHTML("beforeend", `<option value="${h}">${fmtH(h)}–${fmtH(h + 1)}</option>`);
-  ["#sig-mode", "#sig-hour", "#sig-rank"].forEach((id) => $(id).addEventListener("change", renderSignals));
+  if (!DATA.sig) { $("#p-signals").innerHTML = "<p>No signal data. Run the pipeline with data/signals/traffic_signals.json.</p>"; return; }
+  ["#sig-hour", "#sig-rank"].forEach((id) => $(id).addEventListener("change", renderSignals));
   const labels = ["<5", "5–10", "10–15", "15–20", "20–30", "30–45", "45+"];
-  $("#sig-legend").innerHTML = `circle size = total time held · color = avg seconds per vehicle: ` +
-    labels.map((l, i) => `<span><i style="background:${SPEED_RAMP[SPEED_RAMP.length - 1 - i]}"></i>${l}</span>`).join("");
+  $("#sig-legend").innerHTML = `<span>circle = time held · color = seconds per vehicle:</span>` +
+    labels.map((l, i) => `<span><i style="background:${SPEED_RAMP[SPEED_RAMP.length - 1 - i]};border-radius:50%"></i>${l}</span>`).join("");
   renderSignals();
 }
 function renderSignals() {
-  const mode = $("#sig-mode").value, hour = $("#sig-hour").value, rank = $("#sig-rank").value;
+  if (!DATA.sig) return;
+  // mode comes from the chips; "Clock hour" follows the timeline
+  const mode = UI.mode === "all" ? "" : UI.mode, rank = $("#sig-rank").value;
+  const hour = $("#sig-hour").value === "clock" ? String(clampHour(UI.hour)) : "";
   const rows = DATA.sig.signals.map((o) => ({ o, ...sigStats(o, mode, hour) }))
     .filter((r) => r.hours > 0.005 && (rank !== "wait" || r.passes >= (hour === "" ? 40 : 3)));
   rows.sort(rank === "wait" ? (a, b) => b.wait - a.wait : (a, b) => b.hours - a.hours);
   const tot = sum(rows.map((r) => r.hours));
   const when = hour === "" ? "per weekday" : `${fmtH(+hour)}–${fmtH(+hour + 1)}`;
+  $("#sig-mode-l").textContent = CHIP_MODES.find((m) => m[0] === UI.mode)[1].toLowerCase();
+  $("#sig-when-l").textContent = hour === "" ? "all day" : when;
+  $("#sig-headline").textContent = `${SUBJECT[UI.mode][0]} ${hour === "" ? "waits" : "wait"} ${tot >= 10 ? tot.toFixed(0) : tot.toFixed(1)} hours ${hour === "" ? "a day" : "this hour"} at red lights.`;
   $("#sig-tiles").innerHTML = [
-    ["Time held at red lights", `${tot.toFixed(0)} h`, `vehicle-hours ${when}${mode ? ", " + $("#sig-mode").selectedOptions[0].text.toLowerCase() : ""}`],
-    ["Signals that hold transit", rows.length.toLocaleString(), `of ${DATA.sig.n_signals.toLocaleString()} signals in SF`],
-    ["Worst 20 signals", `${Math.round((100 * sum(rows.slice(0, 20).map((r) => r.hours))) / (tot || 1))}%`, "share of all signal delay"],
+    ["Signals that hold transit", rows.length.toLocaleString(), `of ${DATA.sig.n_signals.toLocaleString()} in SF`],
+    ["Worst 20 signals", `${Math.round((100 * sum(rows.slice(0, 20).map((r) => r.hours))) / (tot || 1))}%`, "of all signal delay"],
   ].map(([l, v, d]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
+  $("#sig-unit").textContent = rank === "wait" ? "avg seconds per vehicle" : `vehicle-hours ${hour === "" ? "/ day" : when}`;
 
   const max = d3.max(rows, (r) => r.hours) || 1;
+  sg.rows = rows;
   // small first so big circles draw on top
-  sg.map.points("signals", [...rows].reverse().map((r) => ({
-    lat: r.o.lat, lon: r.o.lon, radius: 2.5 + 16 * Math.sqrt(r.hours / max), strokeWidth: 1, stroke: css("--surface"),
-    fill: waitColor(r.wait), fillOpacity: 0.9, onClick: () => showSignal(r.o),
+  M.points("sig", [...rows].reverse().map((r) => ({
+    lat: r.o.lat, lon: r.o.lon, radius: 2.5 + 16 * Math.sqrt(r.hours / max), strokeWidth: sg.shown === r.o ? 3 : 1,
+    stroke: sg.shown === r.o ? css("--text") : css("--surface"),
+    fill: waitColor(r.wait), fillOpacity: 0.9, onClick: () => pickSignal(r.o),
     tip: `<b>${r.o.name}</b><br>${r.hours.toFixed(2)} vehicle-h held ${when}<br>avg ${r.wait.toFixed(0)} s per vehicle · ${Math.round(r.passes)} passes/day` })));
-  const ol = $("#sig-list");
-  ol.innerHTML = "";
-  rows.slice(0, 60).forEach((r) => {
-    const li = document.createElement("li");
+  const box = $("#sig-list");
+  box.innerHTML = "";
+  rows.slice(0, 50).forEach((r, n) => {
     const routes = [...new Set(r.apps.map((a) => a.route))];
-    li.innerHTML = `<span class="n">${r.o.name}</span><br><b>${r.hours.toFixed(1)}</b> vehicle-h ${when} · avg <b>${r.wait.toFixed(0)} s</b> per vehicle
-      <div class="r">${routes.slice(0, 10).join(", ")}${r.o.near_side_hours > 0.3 ? ` · +${r.o.near_side_hours.toFixed(1)} h at a near-side stop` : ""}</div>`;
-    li.onclick = () => { sg.map.view([r.o.lat, r.o.lon], 17); showSignal(r.o); };
-    ol.appendChild(li);
+    const el = document.createElement("div");
+    el.className = "hot-row" + (sg.shown === r.o ? " sel" : "");
+    el.innerHTML = `<div class="rk">${String(n + 1).padStart(2, "0")}</div>
+      <div><div class="nm">${r.o.name}</div><div class="sb">avg ${r.wait.toFixed(0)} s per vehicle · ${Math.round(r.passes)} passes/day${r.o.near_side_hours > 0.3 ? ` · +${r.o.near_side_hours.toFixed(1)} h at a near-side stop` : ""}</div></div>
+      <div class="hh">${rank === "wait" ? r.wait.toFixed(0) + "s" : r.hours.toFixed(1)}</div><div></div>
+      <div class="bot"><div class="badges">${routes.slice(0, 7).map((x) => `<span class="rb" style="background:${routeColor(x)}">${x}</span>`).join("")}</div></div>`;
+    el.onclick = () => pickSignal(r.o);
+    box.appendChild(el);
   });
   if (!sg.shown && rows[0]) showSignal(rows[0].o);
+}
+function pickSignal(o) {
+  showSignal(o);
+  renderSignals();
+  sg.flown = true;
+  if (!isDesk()) { UI.sheetH = snaps()[1]; applyLayout(false); }
+  $("#sig-detail").scrollIntoView({ block: "nearest", behavior: "smooth" });
+  M.map.flyTo({ center: [o.lon, o.lat], zoom: 16, padding: padding(), duration: 900 });
 }
 function showSignal(o) {
   sg.shown = o;
@@ -1542,11 +1555,9 @@ function showSignal(o) {
   el.innerHTML = `<div class="detail"><h4>${o.name}</h4>
     <div class="muted">${o.veh_hours.toFixed(1)} vehicle-hours held per weekday · ${Math.round(o.passes)} bus/train passes · avg ${o.avg_wait_s.toFixed(0)} s each${o.near_side_hours > 0.05 ? ` · plus ${o.near_side_hours.toFixed(1)} h at a near-side stop` : ""}</div>
     <div id="sig-hours"></div>
-    <table><thead><tr><th>Route</th><th>Heading to</th><th>Held / pass</th><th>Passes/day</th><th>Hours/day</th></tr></thead><tbody>
-    ${o.approaches.map((a) => `<tr><td>${a.route}</td><td>${a.headsign}</td><td>${a.wait_s.toFixed(0)} s</td><td>${Math.round(a.passes)}</td><td>${a.hours.toFixed(2)}</td></tr>`).join("")}
-    </tbody></table></div>`;
+    <div class="apps">${o.approaches.map((a) => `<div><span class="rb" style="background:${routeColor(a.route)}">${a.route}</span><span>to ${a.headsign}</span><b>${a.wait_s.toFixed(0)} s</b><span class="muted">${Math.round(a.passes)}/day</span></div>`).join("")}</div></div>`;
   // hourly profile
-  const box = $("#sig-hours"), W = box.clientWidth || 380, H = 90, m = { l: 30, r: 4, t: 8, b: 18 };
+  const box = $("#sig-hours"), W = box.clientWidth || 330, H = 90, m = { l: 30, r: 4, t: 8, b: 18 };
   const hrs = d3.range(5, 24);
   const x = d3.scaleBand().domain(hrs).range([m.l, W - m.r]).padding(0.15);
   const y = d3.scaleLinear().domain([0, d3.max(hrs, (h) => o.hours[h]) || 0.01]).nice().range([H - m.b, m.t]);
@@ -1600,37 +1611,85 @@ function initAbout() {
 }
 
 // =====================================================================
-const LEGACY = { signals: initSignals, buses: initBuses, stops: initStops, market: initMarket, about: initAbout };
-const legacyInited = {};
+// pages that are just content (no map) vs pages that live on the shared map
+const LEGACY = { buses: initBuses, about: initAbout };
+const MAP_TABS = { city: null, route: null, signals: initSignals, stops: initStops, market: initMarket };
+const mapInited = {};
+// vehicles shown on the Market St page: the Metro lines in the scenario + the Market St bus routes
+const MARKET_ROUTES = new Set(["J", "K", "L", "M", "N", "5R", "7", "9R", "F"]);
+// which shared-map layers each page shows (vehicles are always drawn on the overlay)
+const TAB_LAYERS = {
+  city: ["glow", "speed", "hot"], route: ["speed"], signals: ["sig"], stops: ["stop-route", "stop-pts"],
+  market: ["tk-branch", "tk-trunk", "mk-kept", "mk-cut", "tk-st", "mk-st"],
+};
+const ALL_LAYERS = [...new Set(Object.values(TAB_LAYERS).flat())];
+function showLayers(tab) {
+  if (!M?.loaded) { M?.ready.then(() => showLayers(UI.tab)); return; }
+  for (const n of ALL_LAYERS) {
+    const id = `set-${n}`;
+    if (M.map.getLayer(id)) M.map.setLayoutProperty(id, "visibility", TAB_LAYERS[tab]?.includes(n) ? "visible" : "none");
+  }
+}
+// Frame each map page in the part of the map you can actually see (between the top
+// controls and the side panel / bottom sheet).
+const SF_BOUNDS = [[-122.515, 37.708], [-122.357, 37.812]];
+const boundsOf = (line) => { const lats = line.map((p) => p[0]), lons = line.map((p) => p[1]); return [[d3.min(lons), d3.min(lats)], [d3.max(lons), d3.max(lats)]]; };
+function viewBounds(tab = UI.tab) {
+  if (tab === "route" && rt.route) return boundsOf(rt.route.line);
+  if (tab === "stops" && sc.route) return boundsOf(sc.route.line);
+  if (tab === "market") { const k = routeByKeyFast("K_1"); if (k) return boundsOf(k.line.filter((p) => p[2] >= 3800)); }
+  return SF_BOUNDS;
+}
+function fitView(duration = 700) {
+  if (!M || !(UI.tab in MAP_TABS)) return;
+  M.ready.then(() => {
+    M.map.setPadding(padding());
+    M.map.fitBounds(viewBounds(), { padding: isDesk() ? 30 : 12, duration, maxZoom: 14.5 });
+  });
+}
+const fitLine = () => fitView();
 function showTab(k) {
   UI.tab = k;
   try { localStorage.setItem("tab", k); } catch (e) {}
   if (location.hash.slice(1) !== k) history.replaceState(null, "", "#" + k);
   $("#more").hidden = true;
   drawTabs();
-  const onMap = k === "city" || k === "route";
+  const onMap = k in MAP_TABS;
   $("#page").hidden = onMap;
-  document.getElementById("app").classList.toggle("page-mode", !onMap);   // non-map pages: solid background, no map
+  document.getElementById("app").classList.toggle("page-mode", !onMap);   // content pages: solid background, no map
   $("#panel").hidden = !onMap;
-  $("#chips").hidden = k !== "city";   // Routes: you pick the route, no mode filter
-  $$(".legend, .timeline").forEach((el) => (el.style.visibility = onMap ? "" : "hidden"));
-  $("#p-city").hidden = k !== "city";
-  $("#p-route").hidden = k !== "route";
+  $("#chips").hidden = !(k === "city" || k === "signals");               // mode filter only where it applies
+  $$(".legend").forEach((el) => (el.style.visibility = k === "city" || k === "route" ? "" : "hidden"));
+  $$(".timeline").forEach((el) => (el.style.visibility = onMap ? "" : "hidden"));
+  for (const t of Object.keys(MAP_TABS)) $(`#p-${t}`).hidden = t !== k;
+  $("#panel .panel-body").scrollTop = 0;
   if (!onMap) {
     $$("#page .tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${k}`));
     if (!legacyInited[k]) { legacyInited[k] = true; LEGACY[k](); }
-    [sc.map, mk.map, sg.map, tk.map].forEach((m) => m && m.resize());
     return;
   }
-  drawSpeed(); drawHotspots();
+  showLayers(k);
+  if (MAP_TABS[k] && !mapInited[k]) { mapInited[k] = true; MAP_TABS[k](); }
   if (fleet) fleet.update(UI.t);
-  if (k === "route") {
+  if (k === "city") {
+    drawSpeed(); UI.selHot = null; drawHotspots();
+    fitView();
+  } else if (k === "route") {
+    drawSpeed();
     if (!rt.key) loadRoute(rt.startKey); else { drawRoutePanel(); loadRoute(rt.key); }
-  } else if (M) {
-    UI.selHot = null; drawHotspots();
-    M.map.easeTo({ center: [-122.435, 37.775], zoom: isDesk() ? 12.3 : 11.6, padding: padding(), duration: 700 });
+  } else if (k === "signals") {
+    sg.flown = false;
+    renderSignals();
+    fitView();
+  } else if (k === "stops") {
+    if (sc.data) { renderStops(); fitLine(sc.route.line); }
+  } else if (k === "market") {
+    if (DATA.trunk) renderTrunk();
+    if (mk.routes) renderMarket();
+    fitView();   // the whole trunk, West Portal to Embarcadero
   }
 }
+const legacyInited = {};
 
 async function main() {
   const [net, hot, veh, market, calib] = await Promise.all(
@@ -1645,10 +1704,18 @@ async function main() {
 
   // one map for City + Route
   M = makeMap("map", { center: [37.775, -122.435], zoom: isDesk() ? 13.3 : 12.6, nav: false });
-  M.lines("glow", [], { blur: 6 }); M.lines("speed", []); M.points("hot", []); M.symbols("fleet", []);
+  M.lines("glow", [], { blur: 6 }); M.lines("speed", []);
+  M.lines("stop-route", []); M.lines("tk-branch", []); M.lines("tk-trunk", []); M.lines("mk-kept", []); M.lines("mk-cut", [], { dash: [2, 2] });
+  M.points("hot", []); M.points("sig", []); M.points("stop-pts", []); M.points("tk-st", []); M.points("mk-st", []);
+  M.symbols("fleet", []);
+  M.ready.then(() => showLayers(UI.tab));
   M.ready.then(() => M.map.setPadding(padding()));
   // City: filter by the mode chip. Route: just the chosen route (mode chip doesn't apply).
-  fleet = makeFleetLayer(M, { filter: (mode, label) => (UI.tab === "route" ? label === undefined || label === rt.key : modeOk(mode)) });
+  fleet = makeFleetLayer(M, { filter: (mode, label) =>
+    UI.tab === "route" ? label === undefined || label === rt.key
+    : UI.tab === "stops" ? label === undefined || label === sc.key
+    : UI.tab === "market" ? label === undefined || MARKET_ROUTES.has((label || "").split("_")[0])
+    : modeOk(mode) });
 
   rt.startKey = makeRoutePicker($("#route-select"), $("#route-dir"), (k) => loadRoute(k), "38R_0");
   drawChips(); setupTimeline(); setupSheet(); applyLayout();
