@@ -431,7 +431,8 @@ function pointAt(route, d) {
 const POS = {};
 function positionsFor(h) {
   if (h < 0 || h > 24) return Promise.resolve(null);
-  if (!POS[h]) POS[h] = getJSON(`data/positions/${String(h).padStart(2, "0")}.json`).catch(() => null);
+  // a failed download is forgotten so the next request tries again
+  if (!POS[h]) POS[h] = getJSON(`data/positions/${String(h).padStart(2, "0")}.json`).catch(() => { delete POS[h]; return null; });
   return POS[h];
 }
 // Where a vehicle is at time t: on a trip it travels along its route's geometry
@@ -624,10 +625,15 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
       lastT = t;
       const h = Math.floor(t / 3600);
       if (h !== dataHour) {
+        // Several hours' files can be in flight at once (page load, scrubbing, the
+        // prefetch); keep a result only if it is still the hour being shown, or a
+        // slower earlier download would replace the current hour's data.
         dataHour = h;
-        data = await positionsFor(h);
+        const d = await positionsFor(h);
         positionsFor(h + 1); // prefetch
         if (h !== dataHour) return;
+        if (!d) dataHour = null;   // failed: retry on a later frame (keep showing what we have)
+        else data = d;
       }
       if (!enabled || !data) { gl.symbols(name, []); show(null); return; }
       const feats = [];
@@ -855,7 +861,8 @@ function setPlaying(on) {
   let last = performance.now();
   const frame = (now) => {
     if (!UI.playing) return;
-    const dt = Math.min((now - last) / 1000, 0.25);
+    // rAF's timestamp is the frame start, which can be a hair before the click: never step back
+    const dt = Math.min(Math.max((now - last) / 1000, 0), 0.25);
     last = now;
     setTime(UI.t + dt * UI.speed);
     requestAnimationFrame(frame);
