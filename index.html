@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Muni Time Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+<link rel="stylesheet" href="style.css?v=1791058015">
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+
+  <!-- desktop: title + tabs -->
+  <div class="topbar desk-only">
+    <div class="glass titlecard"><span class="t">Muni Time Lab</span><span class="s subtitle"></span></div>
+    <nav class="glass tabs" id="tabs"></nav>
+  </div>
+
+  <!-- mobile: title + play/clock -->
+  <div class="mtop mobile-only">
+    <div class="glass mtitle"><div class="t">Muni Time Lab</div><div class="s subtitle"></div></div>
+    <button class="glass mplay" data-play aria-label="Play or pause"><span class="dot" data-glyph>▶</span><span class="mono" data-clock></span></button>
+  </div>
+
+  <!-- mode chips -->
+  <div class="chips" id="chips"></div>
+
+  <!-- desktop legend -->
+  <div class="glass legend desk-only" id="legend">
+    <div class="lt">Street speed · <span data-hour></span></div>
+    <div class="ramp" id="legend-ramp"></div>
+    <div class="lr"><span>under 6 mph</span><span>20+</span></div>
+    <div class="lt" style="margin-top:4px">Vehicles</div>
+    <div class="lg">
+      <span><i style="background:#2fa84f"></i>Moving</span>
+      <span><i style="background:#d9412b"></i>Stuck</span>
+      <span><i style="background:#d9dad5"></i>At a stop</span>
+      <span><i style="background:#e3a21a"></i>Crawling</span>
+    </div>
+    <div class="muted">Number on the roof = line, outline = line color · 🚦 held at a light · boarding badge at a stop · hover for speed, click to pin</div>
+  </div>
+
+  <!-- content panel: desktop side panel / mobile bottom sheet -->
+  <div class="glass panel" id="panel">
+    <div class="handle mobile-only" id="handle"><span></span></div>
+    <div class="mtime mobile-only"><span class="mono" data-clock></span><input type="range" min="18000" max="86340" step="10" data-scrub aria-label="Time of day"></div>
+    <div class="mtime mspeed mobile-only"><span>Speed <b data-speed-label></b></span><input type="range" min="0" max="1000" step="1" data-speed aria-label="Playback speed"></div>
+    <div class="panel-body">
+      <section id="p-city">
+        <div id="c-sel" class="mobile-only" hidden></div>
+        <div class="eyebrow">Citywide · <span id="c-mode"></span> · <span data-hour></span></div>
+        <h1 class="headline" id="c-headline"></h1>
+        <div class="stats3">
+          <div><div class="big mono" style="color:var(--s-moving)" id="c-move"></div><div class="lbl">moving</div></div>
+          <div><div class="big mono" style="color:var(--s-dwell)" id="c-dwell"></div><div class="lbl">at bus stops</div></div>
+          <div><div class="big mono" style="color:var(--s-stopped)" id="c-stuck"></div><div class="lbl">stuck in traffic</div></div>
+        </div>
+        <div class="splitbar" id="c-split"></div>
+        <div class="hrow"><h3>Worst sticking points</h3><span class="muted">vehicle-hours lost / day</span></div>
+        <div class="keys">
+          <span><i style="background:var(--s-stopped)"></i>Signals/traffic</span>
+          <span><i style="background:var(--s-dwell)"></i>Bus stops</span>
+          <span><i style="background:var(--s-crawl)"></i>Crawling</span>
+        </div>
+        <div id="c-hot"></div>
+        <p class="foot">Ranked for the selected mode. Tap a sticking point to fly there, or any vehicle for its live speed and status.</p>
+      </section>
+
+      <section id="p-route" hidden>
+        <div class="pickers">
+          <label>Route <select id="route-select"></select></label>
+          <label>Direction <select id="route-dir"></select></label>
+        </div>
+        <div class="rhead"><span class="rbadge" id="r-badge"></span><h1 id="r-name"></h1></div>
+        <div class="rsub" id="r-sub"></div>
+        <div class="stats6">
+          <div><div class="k"><span data-hour-short></span> trip</div><div class="v mono" id="r-med"></div><div class="k">min, median</div></div>
+          <div><div class="k">Bad day</div><div class="v mono" id="r-p90"></div><div class="k">min, 90th pct</div></div>
+          <div><div class="k">Avg speed</div><div class="v mono" id="r-mph"></div><div class="k">mph</div></div>
+          <div><div class="k">Moving</div><div class="v mono" style="color:var(--s-moving)" id="r-pmove"></div></div>
+          <div><div class="k">At stops</div><div class="v mono" style="color:var(--s-dwell)" id="r-pdwell"></div></div>
+          <div><div class="k">Signals &amp; traffic</div><div class="v mono" style="color:var(--s-stopped)" id="r-pstuck"></div></div>
+        </div>
+        <h3>Where the time goes, by hour</h3>
+        <div class="budget" id="r-budget"></div>
+        <div class="axis4"><span>5am</span><span>11am</span><span>5pm</span><span>11pm</span></div>
+        <h3>End-to-end runtime</h3>
+        <div class="keys">
+          <span><i class="ln" style="background:var(--s-moving)"></i>median</span>
+          <span><i style="background:var(--s-moving);opacity:.2"></i>to 90th pct</span>
+          <span><i class="dash"></i>schedule</span>
+        </div>
+        <div class="runtime" id="r-runtime"></div>
+        <div class="axis4"><span>5am</span><span>11am</span><span>5pm</span><span>11pm</span></div>
+        <h3>Speed along the route, by hour</h3>
+        <div class="muted small">Each row is an hour; darker = slower. The outlined row follows the clock.</div>
+        <div class="heat" id="r-heat"></div>
+        <div class="axis2"><span id="r-from"></span><span id="r-to"></span></div>
+      </section>
+
+      <section id="p-signals" hidden>
+        <div class="eyebrow">Traffic signals · <span id="sig-mode-l"></span> · <span id="sig-when-l"></span></div>
+        <h1 class="headline" id="sig-headline"></h1>
+        <div id="sig-tiles" class="tiles"></div>
+        <div class="pickers">
+          <label>When <select id="sig-hour"><option value="">All day</option><option value="clock">Clock hour</option></select></label>
+          <label>Rank by <select id="sig-rank"><option value="hours">Total time held</option><option value="wait">Wait per vehicle</option></select></label>
+        </div>
+        <div class="keys" id="sig-legend"></div>
+        <div id="sig-detail"></div>
+        <div class="hrow"><h3>Signals holding transit the most</h3><span class="muted" id="sig-unit">vehicle-hours / day</span></div>
+        <div id="sig-list"></div>
+        <p class="foot">Every signalized intersection in SF (SFMTA inventory), scored by how long buses and trains sit in the ~75 m queue before it: stopped away from a bus stop, or crawling under 5 mph. Time at a bus stop right before a light is counted separately.</p>
+      </section>
+
+      <section id="p-stops" hidden>
+        <div class="pickers">
+          <label>Route <select id="stop-route"></select></label>
+          <label>Direction <select id="stop-dir"></select></label>
+        </div>
+        <div class="eyebrow" style="margin-top:16px">Stop consolidation</div>
+        <h1 class="headline" style="font-size:24px">Fewer stops, faster trips?</h1>
+        <div class="spacing">
+          <div class="srow"><span>Max spacing</span><b id="stop-target-label"></b></div>
+          <input type="range" id="stop-target" min="300" max="1000" step="20" value="520" aria-label="Target max spacing">
+          <div class="btns"><button id="stop-auto" class="primary">Auto-consolidate</button><button id="stop-reset" class="ghost">Reset</button></div>
+        </div>
+        <div id="stop-tiles" class="tiles"></div>
+        <details class="assume"><summary>Assumptions</summary>
+          <div class="pgrid">
+            <label title="Extra time lost to decelerating into and accelerating out of a stop">Accel/decel loss <span><input type="number" id="p-accel" value="12" min="0" max="40"> s</span></label>
+            <label title="Door open/close, kneeling, re-entering traffic">Fixed door time <span><input type="number" id="p-door" value="6" min="0" max="30"> s</span></label>
+            <label title="Average time a bus is stopped when it does stop; turns measured stopped-seconds into how often buses halt">Avg dwell per halt <span><input type="number" id="p-dwell" value="20" min="5" max="60"> s</span></label>
+            <label title="Walking speed for riders at removed stops">Walk speed <span><input type="number" id="p-walk" value="1.2" step="0.1" min="0.5" max="2"> m/s</span></label>
+            <label class="chk"><input type="checkbox" id="p-protect" checked> Keep transfer stops</label>
+            <label class="chk"><input type="checkbox" id="p-rapid"> Keep Rapid stops</label>
+          </div>
+        </details>
+        <details class="assume"><summary>Reality check from Muni's Rapid routes</summary><div id="calib" class="small"></div></details>
+        <div class="hrow"><h3>Stops</h3><span class="muted">tap to remove / restore · bar = how often buses halt</span></div>
+        <div id="stop-list" class="stoplist"></div>
+      </section>
+
+      <section id="p-market" hidden>
+        <div class="eyebrow">Market St trunk · <span data-hour></span></div>
+        <h1 class="headline" style="font-size:24px">One line under Market St?</h1>
+        <p class="small muted">Five Metro lines share the Market St subway, each merging in at a portal. What if one line ran Embarcadero ↔ West Portal and the rest ended at the subway, with riders transferring underground? Buses on Market St could do the same. Uses the timeline's hour.</p>
+        <h3>Metro: one line in the subway</h3>
+        <div id="tk-tiles" class="tiles"></div>
+        <details class="assume"><summary>Assumptions</summary>
+          <div class="pgrid">
+            <label title="Trains per hour on the trunk. Blank = same as today at that hour">Trunk trains/hour <span><input type="number" id="tk-tph" placeholder="as today" min="6" max="40" step="1" style="width:84px"></span></label>
+            <label title="Between the branch and trunk platforms">Transfer walk <span><input type="number" id="tk-walk" value="1.5" min="0" max="10" step="0.5"> min</span></label>
+            <label title="Coefficient of variation of the trunk's gaps; 0 = perfectly even">Trunk regularity <span><input type="number" id="tk-cv" value="0.25" min="0" max="1.5" step="0.05"> CV</span></label>
+            <label title="Time for a trunk train to reverse at each end">Turnback <span><input type="number" id="tk-turn" value="3" min="0" max="10" step="0.5"> min</span></label>
+          </div>
+        </details>
+        <div id="tk-table"></div>
+        <div id="tk-notes" class="foot"></div>
+        <h3>Buses: end at a subway station</h3>
+        <div id="mk-tiles" class="tiles"></div>
+        <details class="assume"><summary>Assumptions</summary>
+          <div class="pgrid">
+            <label title="Bus stop to platform, incl. stairs and fare gates">Transfer walk <span><input type="number" id="mk-walk" value="3" min="0" max="10" step="0.5"> min</span></label>
+            <label title="Extra perceived cost of transferring (0 = real minutes only)">Transfer penalty <span><input type="number" id="mk-penalty" value="0" min="0" max="15" step="1"> min</span></label>
+            <label title="Time for a truncated bus to turn around">Turnaround <span><input type="number" id="mk-turn" value="4" min="0" max="15" step="1"> min</span></label>
+          </div>
+        </details>
+        <div id="mk-routes"></div>
+        <div id="mk-table"></div>
+        <div id="mk-notes" class="foot"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- desktop timeline -->
+  <div class="glass timeline desk-only" id="timeline">
+    <button class="play" data-play aria-label="Play or pause"><span data-glyph>▶</span></button>
+    <div class="tclock"><div class="mono" data-clock></div><div class="note" id="speed-note"></div></div>
+    <div class="tmain">
+      <div class="bars" id="bars"></div>
+      <input type="range" min="18000" max="86340" step="10" data-scrub aria-label="Time of day">
+      <div class="ticks"><span>5am</span><span>9am</span><span>1pm</span><span>5pm</span><span>9pm</span><span>midnight</span></div>
+    </div>
+    <label class="tspeed" title="Playback speed"><span>Speed <b data-speed-label></b></span>
+      <input type="range" min="0" max="1000" step="1" data-speed aria-label="Playback speed"></label>
+  </div>
+
+  <!-- vehicle panel: beside the vehicle on desktop, under the top bar on mobile -->
+  <div class="glass vpanel" id="vpanel" hidden></div>
+
+  <!-- the screens not yet redesigned keep their layout inside a large panel -->
+  <div class="glass page" id="page" hidden>
+
+  <!-- BUSES -->
+  <section id="tab-buses" class="tab">
+    <p class="lede">Each row is one vehicle (bus, train, streetcar or cable car) on <span id="bus-day"></span>. Sorted by the share of in-service time spent not moving.</p>
+    <div id="fleet-bar" class="chart wide"></div>
+    <div class="controls">
+      <label>Mode <select id="bus-mode"><option value="">All</option><option value="bus">Buses</option><option value="rail">Metro trains</option><option value="streetcar">Streetcars</option><option value="cable">Cable cars</option></select></label>
+      <label>Route <select id="bus-route"><option value="">All</option></select></label>
+      <label>Sort <select id="bus-sort">
+        <option value="stuck">Most time stuck</option>
+        <option value="service">Most hours in service</option>
+        <option value="layover">Most layover</option>
+        <option value="id">Bus number</option>
+      </select></label>
+    </div>
+    <div id="bus-timelines" class="chart wide"></div>
+  </section>
+
+
+
+  <section id="tab-about" class="tab prose" ></section>
+  </div>
+
+  <!-- mobile tab bar -->
+  <nav class="mtabs mobile-only" id="mtabs"></nav>
+  <div class="glass more" id="more" hidden></div>
+</div>
+<div id="tip" class="tip" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="app.js?v=1791058015"></script>
+</body>
+</html>
