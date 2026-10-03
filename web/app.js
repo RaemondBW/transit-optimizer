@@ -43,7 +43,9 @@ function speedLegend(el) {
 
 // ---------- tooltip ----------
 const tip = $("#tip");
+let tipQuietUntil = 0;   // a tap on a vehicle shouldn't also pop the tip of the line under it
 function showTip(ev, html) {
+  if (performance.now() < tipQuietUntil) return;
   tip.innerHTML = html; tip.hidden = false;
   const w = tip.offsetWidth, h = tip.offsetHeight;
   let x = ev.clientX + 14, y = ev.clientY + 14;
@@ -269,7 +271,16 @@ GLMap.prototype.ensureVehicleIcons = function () {
   });
 };
 // Icon scale used by the symbol layer at a given MapLibre zoom (keep in sync with icon-size).
-const iconScale = (z) => (z <= 10 ? 0.45 : z <= 13 ? 0.45 + ((z - 10) / 3) * 0.3 : z <= 16 ? 0.75 + ((z - 13) / 3) * 0.5 : 1.25);
+// icon size vs zoom: tiny when the whole city is in view, full size on the street
+const ICON_STOPS = [[10, 0.2], [11.5, 0.3], [13, 0.55], [14.5, 0.8], [16, 1.1], [17, 1.25]];
+const iconScale = (z) => {
+  if (z <= ICON_STOPS[0][0]) return ICON_STOPS[0][1];
+  for (let i = 1; i < ICON_STOPS.length; i++) {
+    const [z1, s1] = ICON_STOPS[i];
+    if (z <= z1) { const [z0, s0] = ICON_STOPS[i - 1]; return s0 + ((z - z0) / (z1 - z0)) * (s1 - s0); }
+  }
+  return ICON_STOPS.at(-1)[1];
+};
 // features: [{ lat, lon, icon, rot, tip, onClick }]
 // Vehicles are drawn on a 2D canvas laid over the map, every frame, instead of
 // through a MapLibre GeoJSON source: re-uploading ~700 moving icons each frame
@@ -322,7 +333,7 @@ GLMap.prototype.symbols = function (name, features, opts = {}) {
       }
       if (ring) {   // highlight ring around the selected vehicle
         const p = m.project([ring.lon, ring.lat]);
-        g.beginPath(); g.arc(p.x, p.y, 17, 0, Math.PI * 2);
+        g.beginPath(); g.arc(p.x, p.y, Math.max(9, 5 + 16 * scale), 0, Math.PI * 2);
         g.fillStyle = css("--accent") + "2e"; g.fill();
         g.lineWidth = 3; g.strokeStyle = css("--accent"); g.stroke();
       }
@@ -332,9 +343,9 @@ GLMap.prototype.symbols = function (name, features, opts = {}) {
     m.on("move", set.schedule);
     m.on("resize", set.schedule);
     // hover/click: nearest drawn vehicle within HIT px (icons are small and moving)
-    const HIT = 12;
-    const nearest = (pt) => {
-      let best = null, bd = HIT;
+    const HIT = 12, TOUCH_HIT = 24;
+    const nearest = (pt, hit = HIT) => {
+      let best = null, bd = hit;
       for (const d of set.drawn) {
         if (d.f.key == null) continue;
         const dist = Math.hypot(d.x - pt.x, d.y - pt.y);
@@ -342,7 +353,29 @@ GLMap.prototype.symbols = function (name, features, opts = {}) {
       }
       return best;
     };
+    // Touch: a tap pins the vehicle under the finger (or closes the card on empty map).
+    // Browsers follow a tap with synthetic mousemove/mouseout/click events; those would
+    // read as hover-then-leave and close the card again, so ignore mouse events for a
+    // moment after any touch.
+    let touchUntil = 0, down = null;
+    const el = m.getCanvasContainer();
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType !== "mouse") { touchUntil = performance.now() + 1000; down = { x: e.clientX, y: e.clientY, t: performance.now() }; }
+    });
+    el.addEventListener("pointerup", (e) => {
+      if (e.pointerType === "mouse" || !down) return;
+      touchUntil = performance.now() + 1000;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y), dt = performance.now() - down.t;
+      down = null;
+      if (moved > 10 || dt > 500) return;   // a pan or long press, not a tap
+      const r = m.getCanvas().getBoundingClientRect();
+      const f = nearest({ x: e.clientX - r.left, y: e.clientY - r.top }, TOUCH_HIT);
+      const h = f && set.handlers.get(f.key);
+      if (h) { hideTip(); tipQuietUntil = performance.now() + 800; h(); } else if (set.onTapEmpty) set.onTapEmpty();
+    });
+    const fromTouch = () => performance.now() < touchUntil;
     m.on("mousemove", (e) => {
+      if (fromTouch()) return;
       const f = nearest(e.point);
       if (f) {
         m.getCanvas().style.cursor = "pointer"; set.hovering = true;
@@ -353,13 +386,14 @@ GLMap.prototype.symbols = function (name, features, opts = {}) {
         if (set.onHover) { set.hoverKey = null; set.onHover(null); }
       }
     });
-    m.on("mouseout", () => { if (set.onHover && set.hoverKey != null) { set.hoverKey = null; set.onHover(null); } });
-    m.on("click", (e) => { const f = nearest(e.point); const h = f && set.handlers.get(f.key); if (h) { hideTip(); h(); } });
+    m.on("mouseout", () => { if (fromTouch()) return; if (set.onHover && set.hoverKey != null) { set.hoverKey = null; set.onHover(null); } });
+    m.on("click", (e) => { if (fromTouch()) return; const f = nearest(e.point); const h = f && set.handlers.get(f.key); if (h) { hideTip(); h(); } });
     this.sets[name] = set;
   }
   set.features = features;
   set.handlers = new Map(features.filter((f) => f.onClick).map((f) => [f.key, f.onClick]));
   if (opts.onHover) set.onHover = opts.onHover;
+  if (opts.onTapEmpty) set.onTapEmpty = opts.onTapEmpty;
   set.schedule();
 };
 const bearingOf = (a, b) => (Math.atan2((b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180), b[0] - a[0]) * 180) / Math.PI;
@@ -644,7 +678,7 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
         if (sel && sel.vid === vid) selPos = p;
         // just past the vehicle's nose: a red light when it's held at a signal,
         // passengers boarding when it's at a stop
-        if (p.shape && p.along != null) {
+        if (z >= 12 && p.shape && p.along != null) {
           const mphNow = Math.max(0, p.a[6] + p.f * (p.b[6] - p.a[6]));
           const k = mphNow < 5 ? describe(p, mphNow).key : 0;
           if (k === 3 || k === 2) {
@@ -655,7 +689,7 @@ function makeFleetLayer(gl, { filter = () => true, name = "fleet" } = {}) {
         }
       }
       if (sel && selPos) feats.push({ ring: true, lat: selPos.lat, lon: selPos.lon });
-      gl.symbols(name, feats, { onHover: hover });
+      gl.symbols(name, feats, { onHover: hover, onTapEmpty: () => { if (pinned) { pinned = null; hovered = null; show(null); } } });
       if (sel) {
         // The trip the card was opened on has ended (finished the route, started another
         // run, laid over, or the GPS ran out): close the card.

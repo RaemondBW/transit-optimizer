@@ -359,6 +359,20 @@ optgroup { font-style: normal; font-weight: 600; }
 #map { bottom: calc(64px + env(safe-area-inset-bottom)); }
 .page { left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 74px); bottom: calc(72px + env(safe-area-inset-bottom)); padding: 16px; }
 .vpanel { left: 50%; top: calc(env(safe-area-inset-top) + 124px); transform: translateX(-50%); }
+/* phones: a compact horizontal card under the chips, so it covers little of the map */
+@media (max-width: 1099px) {
+  .vpanel { left: 12px; right: 12px; width: auto; max-width: 420px; margin: 0 auto; transform: none; padding: 8px 40px 8px 10px; text-align: left; }
+  .vpanel .vp-body { display: grid; grid-template-columns: 104px minmax(0, 1fr); grid-template-areas: "gauge head" "gauge dest" "speed status" "speed where"; column-gap: 12px; align-items: center; }
+  .vpanel .vp-gauge { grid-area: gauge; width: 104px; height: 57px; margin: 0; align-self: end; }
+  .vpanel .vp-speed { grid-area: speed; text-align: center; align-self: start; margin-top: 0; }
+  .vpanel .vp-num { font-size: 26px; }
+  .vpanel .vp-unit { font-size: 11px; margin-left: 2px; }
+  .vpanel .vp-head { grid-area: head; justify-content: flex-start; padding: 0; }
+  .vpanel .vp-dest { grid-area: dest; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vpanel .vp-status { grid-area: status; justify-content: flex-start; margin-top: 4px; font-size: 15px; }
+  .vpanel .vp-where { grid-area: where; min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vpanel .vp-hint { display: none; }
+}
 
 /* ---- desktop placements ---- */
 @media (min-width: 1100px) {
